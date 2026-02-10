@@ -16,10 +16,9 @@ from torch.utils.data import DataLoader, Dataset, TensorDataset, Subset
 
 
 def load_dataset(
-    data_source: Path | type,
+    data_source: str | Path | type,
     transform: transforms.Compose,
     train: bool = True,
-    download: bool = False,
     **dataset_kwargs
 ) -> Dataset:
     '''Load a single dataset from a directory or PyTorch dataset class.
@@ -29,17 +28,19 @@ def load_dataset(
     custom datasets stored in directories following the ImageFolder structure.
     
     Args:
-        data_source: Either a Path to a directory containing train/ or test/ subdirectory,
+        data_source: Either a string or Path to a directory containing train/ or test/ subdirectory,
                     or a PyTorch dataset class (e.g., datasets.CIFAR10)
         transform: Transforms to apply to the data
         train: If True, load training data. If False, load test data (default: True)
-        download: Whether to download the dataset if using a PyTorch dataset class.
-                 Ignored for directory-based datasets.
         **dataset_kwargs: Additional keyword arguments passed to the dataset class
                          (e.g., root='data/pytorch/cifar10')
     
     Returns:
         Dataset object
+    
+    Raises:
+        TypeError: If data_source is not a Path or a PyTorch dataset class
+        ValueError: If directory-based dataset path does not exist
     
     Examples:
         # Load CIFAR-10 training data
@@ -52,13 +53,15 @@ def load_dataset(
         
         # Load from ImageFolder
         train_dataset = load_dataset(
-            data_source=Path('data/my_dataset'),
+            data_source='data/my_dataset',
             transform=transform,
             train=True
         )
     '''
     
-    if isinstance(data_source, Path):
+    if isinstance(data_source, (str, Path)):
+        data_source = Path(data_source)
+
         # Directory-based dataset using ImageFolder
         subdir = 'train' if train else 'test'
         data_dir = data_source / subdir
@@ -71,15 +74,32 @@ def load_dataset(
             transform=transform
         )
     
-    else:
+    elif isinstance(data_source, type) and issubclass(data_source, Dataset):
+
         # PyTorch dataset class (CIFAR-10, MNIST, etc.)
-        dataset_class = data_source
-        
-        return dataset_class(
-            train=train,
-            download=download,
-            transform=transform,
-            **dataset_kwargs
+        # Try loading without download first, then download if not found
+        try:
+            return data_source(
+                train=train,
+                download=False,
+                transform=transform,
+                **dataset_kwargs
+            )
+
+        except (RuntimeError, FileNotFoundError):
+
+            # Dataset not found on disk, download it
+            return data_source(
+                train=train,
+                download=True,
+                transform=transform,
+                **dataset_kwargs
+            )
+    
+    else:
+        raise TypeError(
+            f'data_source must be a Path or a PyTorch Dataset class, '
+            f'got {type(data_source).__name__}'
         )
 
 
