@@ -12,8 +12,11 @@ def evaluate_model(
 ) -> tuple[float, np.ndarray, np.ndarray]:
     '''Evaluate model on test set.
     
-    Note: Assumes data is already on the correct device.
+    Automatically moves data to the same device as the model.
     '''
+
+    # Get device from model parameters
+    device = next(model.parameters()).device
 
     model.eval()
     correct = 0
@@ -24,6 +27,8 @@ def evaluate_model(
     with torch.no_grad():
 
         for images, labels in test_loader:
+            images = images.to(device)
+            labels = labels.to(device)
 
             outputs = model(images)
             _, predicted = torch.max(outputs.data, 1)
