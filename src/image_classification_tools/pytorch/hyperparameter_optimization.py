@@ -219,13 +219,20 @@ def create_objective(
             'learning_rate', lr_params[0], lr_params[1], log=(lr_params[2] == 'log' if len(lr_params) > 2 else False)
         )
         
-        optimizer_name = trial.suggest_categorical('optimizer', search_space['optimizer'])
+        # Optimizer (optional, defaults to Adam)
+        if 'optimizer' in search_space:
+            optimizer_name = trial.suggest_categorical('optimizer', search_space['optimizer'])
+        else:
+            optimizer_name = 'Adam'
         
-        # Weight decay
-        wd_params = search_space['weight_decay']
-        weight_decay = trial.suggest_float(
-            'weight_decay', wd_params[0], wd_params[1], log=(wd_params[2] == 'log' if len(wd_params) > 2 else False)
-        )
+        # Weight decay (optional, defaults to 0)
+        if 'weight_decay' in search_space:
+            wd_params = search_space['weight_decay']
+            weight_decay = trial.suggest_float(
+                'weight_decay', wd_params[0], wd_params[1], log=(wd_params[2] == 'log' if len(wd_params) > 2 else False)
+            )
+        else:
+            weight_decay = 0.0
         
         # Create data loaders with suggested batch size
         # Load datasets
@@ -233,7 +240,6 @@ def create_objective(
             data_source=datasets.CIFAR10,
             transform=transform,
             train=True,
-            download=False,
             root=data_dir
         )
         
@@ -241,7 +247,6 @@ def create_objective(
             data_source=datasets.CIFAR10,
             transform=transform,
             train=False,
-            download=False,
             root=data_dir
         )
         
@@ -260,33 +265,37 @@ def create_objective(
             device=device
         )
         
-        # Create model with suggested architecture
-        model = create_cnn(
-            n_conv_blocks=n_conv_blocks,
-            initial_filters=initial_filters,
-            n_fc_layers=n_fc_layers,
-            conv_dropout_rate=conv_dropout_rate,
-            fc_dropout_rate=fc_dropout_rate,
-            num_classes=num_classes,
-            in_channels=in_channels
-        ).to(device)
-        
-        # Define optimizer
-        if optimizer_name == 'Adam':
-            optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-
-        elif optimizer_name == 'SGD':
-            momentum = trial.suggest_float('sgd_momentum', *search_space['sgd_momentum'])
-            optimizer = optim.SGD(model.parameters(), lr=learning_rate, 
-                                momentum=momentum, weight_decay=weight_decay)
-        
-        else:  # RMSprop
-            optimizer = optim.RMSprop(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        
-        criterion = nn.CrossEntropyLoss()
-        
-        # Train model and return best validation accuracy
+        # Wrap model creation and training in try/except to catch OOM errors
         try:
+            # Create model with suggested architecture
+            model = create_cnn(
+                n_conv_blocks=n_conv_blocks,
+                initial_filters=initial_filters,
+                n_fc_layers=n_fc_layers,
+                conv_dropout_rate=conv_dropout_rate,
+                fc_dropout_rate=fc_dropout_rate,
+                num_classes=num_classes,
+                in_channels=in_channels
+            ).to(device)
+            
+            # Define optimizer
+            if optimizer_name == 'Adam':
+                optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+
+            elif optimizer_name == 'SGD':
+                if 'sgd_momentum' in search_space:
+                    momentum = trial.suggest_float('sgd_momentum', *search_space['sgd_momentum'])
+                else:
+                    momentum = 0.9
+                optimizer = optim.SGD(model.parameters(), lr=learning_rate, 
+                                    momentum=momentum, weight_decay=weight_decay)
+            
+            else:  # RMSprop
+                optimizer = optim.RMSprop(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+            
+            criterion = nn.CrossEntropyLoss()
+            
+            # Train model and return best validation accuracy
             return train_trial(
                 model=model,
                 optimizer=optimizer,
@@ -299,6 +308,7 @@ def create_objective(
 
         except RuntimeError as e:
             # Catch architecture errors (e.g., dimension mismatches)
+            torch.cuda.empty_cache()
             raise optuna.TrialPruned(f'RuntimeError with params: {trial.params} - {str(e)}')
         
         except torch.cuda.OutOfMemoryError:
