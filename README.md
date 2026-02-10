@@ -24,17 +24,6 @@ CIFAR-10 consists of 60,000 32×32 color images across 10 classes:
 4. [`04-optimized-CNN.ipynb`](notebooks/04-optimized-CNN.ipynb) - Bayesian hyperparameter optimization with Optuna
 5. [`05-augmented-CNN.ipynb`](notebooks/05-augmented-CNN.ipynb) - Data augmentation for improved generalization
 
-## Visualizations
-
-Each experiment includes:
-
-- **Learning curves**: Track training and validation loss/accuracy over time
-- **Confusion matrices**: See which classes the model confuses
-- **Class probability distributions**: Understand model confidence
-- **ROC curves**: Measure classification performance across all classes
-- **Precision-recall curves**: Examine trade-offs for each class
-- **Optimization landscapes**: Visualize hyperparameter sensitivity (Experiment 4)
-
 ## Getting started
 
 ### Prerequisites
