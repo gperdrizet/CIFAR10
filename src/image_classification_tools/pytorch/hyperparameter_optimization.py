@@ -170,8 +170,8 @@ def train_trial(
             if patience_counter >= early_stopping_patience:
                 break
         
-        # Report intermediate value for pruning
-        trial.report(val_accuracy, epoch)
+        # Report intermediate value for pruning (use loss for pruner, lower is better)
+        trial.report(avg_val_loss, epoch)
         
         # Prune unpromising trials
         if trial.should_prune():
