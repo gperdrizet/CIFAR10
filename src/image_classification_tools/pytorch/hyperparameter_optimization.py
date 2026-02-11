@@ -30,14 +30,17 @@ def create_cnn(
     '''Create a CNN with configurable architecture.
     
     This function builds a flexible CNN architecture with conv blocks that
-    progressively double filters (initial_filters -> 2x -> 4x -> 8x, etc.).
-    Each conv block contains: 2 Conv layers + BatchNorm + ReLU + MaxPool + Dropout.
+    progressively double filters every 2 blocks for deeper networks.
+    Each conv block contains: 2 Conv layers + BatchNorm + ReLU + Conditional MaxPool + Dropout.
+    MaxPooling is applied every 2 blocks (and always after the last block) to enable
+    deeper architectures without spatial dimension collapse. For 32x32 inputs, supports
+    up to ~10 conv blocks.
     Uses adaptive pooling before classifier to handle variable spatial dimensions.
     
     Args:
-        n_conv_blocks: Number of convolutional blocks (1-5)
-        initial_filters: Number of filters in first conv block (doubles each block)
-        n_fc_layers: Number of fully connected layers before output (1-4)
+        n_conv_blocks: Number of convolutional blocks (1-10 for 32x32 inputs)
+        initial_filters: Number of filters in first conv block (doubles every 2 blocks)
+        n_fc_layers: Number of fully connected layers before output (1-5)
         conv_dropout_rate: Dropout probability after convolutional blocks
         fc_dropout_rate: Dropout probability in fully connected layers
         num_classes: Number of output classes (required)
@@ -52,7 +55,8 @@ def create_cnn(
     
     # Convolutional blocks
     for block_idx in range(n_conv_blocks):
-        out_channels = initial_filters * (2 ** block_idx)
+        # Double filters every 2 blocks (slower growth for deeper networks)
+        out_channels = initial_filters * (2 ** (block_idx // 2))
         
         # First conv in block
         layers.append(nn.Conv2d(current_channels, out_channels, kernel_size=3, padding=1))
@@ -64,8 +68,10 @@ def create_cnn(
         layers.append(nn.BatchNorm2d(out_channels))
         layers.append(nn.ReLU())
         
-        # Pooling and dropout
-        layers.append(nn.MaxPool2d(2, 2))
+        # Pool every 2 blocks, or after the last block (enables deeper architectures)
+        if (block_idx + 1) % 2 == 0 or (block_idx + 1) == n_conv_blocks:
+            layers.append(nn.MaxPool2d(2, 2))
+        
         layers.append(nn.Dropout(conv_dropout_rate))
         
         current_channels = out_channels
@@ -330,14 +336,26 @@ def create_objective(
             )
 
         except RuntimeError as e:
-            # Catch architecture errors (e.g., dimension mismatches)
+            # Catch architecture errors (e.g., dimension collapse, layer mismatches)
+            error_msg = str(e)
             torch.cuda.empty_cache()
-            # Let Optuna mark this as FAILED (not PRUNED)
-            raise RuntimeError(f'RuntimeError with params: {trial.params} - {str(e)}')
+            
+            # Check if this is a dimension collapse error
+            if 'Output size is too small' in error_msg or 'Calculated output size' in error_msg:
+                # Report to trial as user attribute for debugging
+                trial.set_user_attr('failure_reason', 'dimension_collapse')
+                trial.set_user_attr('error_message', error_msg)
+                # Return worst possible score to mark trial as failed
+                return 0.0
+            else:
+                # Other RuntimeErrors should still crash (unexpected issues)
+                raise RuntimeError(f'RuntimeError with params: {trial.params} - {error_msg}')
         
         except torch.cuda.OutOfMemoryError as e:
-            # Clear CUDA cache and let Optuna mark this as FAILED
+            # Clear CUDA cache and mark trial as failed
             torch.cuda.empty_cache()
-            raise RuntimeError(f'CUDA OOM with params: {trial.params}') from e
+            trial.set_user_attr('failure_reason', 'cuda_oom')
+            # Return worst possible score instead of crashing
+            return 0.0
     
     return objective
