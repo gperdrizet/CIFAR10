@@ -113,7 +113,8 @@ def train_trial(
     val_loader: DataLoader,
     n_epochs: int,
     trial: optuna.Trial,
-    early_stopping_patience: int = None
+    early_stopping_patience: int = None,
+    min_delta: float = 0.0
 ) -> float:
     '''Train a model for a single Optuna trial with pruning support.
     
@@ -126,6 +127,7 @@ def train_trial(
         n_epochs: Number of epochs to train
         trial: Optuna trial object for reporting and pruning
         early_stopping_patience: Number of epochs to wait before stopping if validation loss doesn't improve (None to disable)
+        min_delta: Minimum change in validation loss to qualify as an improvement (default: 0.0)
     
     Returns:
         Best validation accuracy achieved during training
@@ -167,13 +169,17 @@ def train_trial(
         
         # Early stopping based on validation loss
         if early_stopping_patience is not None:
-            if avg_val_loss < best_val_loss:
+            if avg_val_loss < best_val_loss - min_delta:
                 best_val_loss = avg_val_loss
                 patience_counter = 0
             else:
                 patience_counter += 1
             
             if patience_counter >= early_stopping_patience:
+                # Mark trial as stopped early for dashboard visibility
+                trial.set_user_attr('stopped_early', True)
+                trial.set_user_attr('stopped_at_epoch', epoch + 1)
+                trial.set_user_attr('total_epochs_planned', n_epochs)
                 break
         
         # Report intermediate value for pruning (use loss for pruner, lower is better)
@@ -182,6 +188,11 @@ def train_trial(
         # Prune unpromising trials
         if trial.should_prune():
             raise optuna.TrialPruned()
+    
+    # Mark if trial completed all epochs without early stopping
+    if early_stopping_patience is not None and patience_counter < early_stopping_patience:
+        trial.set_user_attr('stopped_early', False)
+        trial.set_user_attr('completed_epochs', n_epochs)
     
     return best_val_accuracy
 
@@ -194,7 +205,8 @@ def create_objective(
     num_classes: int,
     in_channels: int = 3,
     search_space: dict = None,
-    early_stopping_patience: int = None
+    early_stopping_patience: int = None,
+    min_delta: float = 0.0
 ) -> Callable[[optuna.Trial], float]:
     '''Create an Optuna objective function for CNN hyperparameter optimization.
     
@@ -210,6 +222,7 @@ def create_objective(
         in_channels: Number of input channels (default: 3 for RGB images, 1 for grayscale)
         search_space: Dictionary defining hyperparameter search space (default: None)
         early_stopping_patience: Number of epochs to wait before stopping if validation loss doesn't improve (None to disable, default: None)
+        min_delta: Minimum change in validation loss to qualify as an improvement (default: 0.0)
     
     Returns:
         Objective function for optuna.Study.optimize()
@@ -332,7 +345,8 @@ def create_objective(
                 val_loader=val_loader,
                 n_epochs=n_epochs,
                 trial=trial,
-                early_stopping_patience=early_stopping_patience
+                early_stopping_patience=early_stopping_patience,
+                min_delta=min_delta
             )
 
         except RuntimeError as e:
