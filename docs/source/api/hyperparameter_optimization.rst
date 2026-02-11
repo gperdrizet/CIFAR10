@@ -25,13 +25,13 @@ create_cnn
 
 Creates a CNN with dynamic architecture based on hyperparameters:
 
-* Variable number of convolutional blocks (1-5)
-* Doubling filter sizes per block
-* Configurable kernel sizes (decreasing pattern)
+* Variable number of convolutional blocks (1-10 for 32x32 inputs)
+* Filters double every 2 blocks (slower growth for deeper networks)
+* Conditional max pooling every 2 blocks (enables deeper architectures)
 * Dynamic fully-connected layers with halving sizes
 * Separate dropout for conv and FC layers
-* Choice of max or average pooling
-* Optional batch normalization
+* Batch normalization after each conv layer
+* Adaptive average pooling before classifier
 
 create_objective
 ~~~~~~~~~~~~~~~~
@@ -40,8 +40,10 @@ Factory function that creates an Optuna objective for hyperparameter search:
 
 * Accepts configurable search space dictionary
 * Creates data loaders per trial with suggested batch size
-* Handles architecture errors gracefully
+* Handles dimension collapse errors gracefully (returns 0.0 score)
+* Handles CUDA out-of-memory errors gracefully (returns 0.0 score)
 * Supports MedianPruner for early stopping
+* Records failure reasons as trial attributes for debugging
 
 train_trial
 ~~~~~~~~~~~
@@ -68,7 +70,7 @@ Basic hyperparameter optimization for MNIST:
    # Define search space
    search_space = {
        'batch_size': [64, 128, 256],
-       'n_conv_blocks': (1, 3),
+       'n_conv_blocks': (1, 3),  # 1-3 blocks for MNIST, use 1-10 for CIFAR-10
        'initial_filters': [16, 32],
        'n_fc_layers': (1, 3),
        'conv_dropout_rate': (0.1, 0.5),
@@ -145,15 +147,31 @@ The search space dictionary supports three formats:
 * **Tuple (2 elements)**: Continuous range - ``(0.0, 0.5)`` for float, ``(1, 8)`` for int
 * **Tuple (3 elements)**: Range with scale - ``(1e-5, 1e-1, 'log')`` for log-scaled float
 
-Default search space includes:
+Example search space for CIFAR-10:
 
 * Batch size: [64, 128, 256, 512]
-* Conv blocks: 1-5
+* Conv blocks: 1-10 (pools every 2 blocks)
 * Initial filters: [16, 32, 64, 128]
-* FC layers: 1-4
+* FC layers: 1-5
 * Conv dropout: 0.1-0.5
 * FC dropout: 0.3-0.7
 * Learning rate: 1e-5 to 1e-2 (log scale)
-* Optimizer: ['Adam', 'SGD', 'RMSprop']
-* SGD momentum: 0.8-0.99
-* Weight decay: 1e-6 to 1e-3 (log scale)
+* Optimizer: ['Adam', 'SGD', 'RMSprop'] (optional)
+* SGD momentum: 0.8-0.99 (optional)
+* Weight decay: 1e-6 to 1e-3 (log scale, optional)
+
+Notes
+-----
+
+**Architectural constraints**:
+
+* For 32x32 images (CIFAR-10), support up to 10 conv blocks due to conditional pooling
+* Max pooling occurs every 2 blocks, allowing deeper networks without dimension collapse
+* Filters double every 2 blocks instead of every block for parameter efficiency
+* Adaptive average pooling handles variable spatial dimensions before classifier
+
+**Error handling**:
+
+* Dimension collapse errors (e.g., spatial size becoming 0) return score of 0.0
+* CUDA out-of-memory errors are caught and return score of 0.0
+* Failure reasons stored as trial attributes: ``trial.user_attrs['failure_reason']``

@@ -19,7 +19,7 @@ The evaluation module provides functions for:
 * Model evaluation on test sets
 * Prediction generation
 * Accuracy calculation
-* Support for custom devices
+* Automatic device detection from model parameters
 
 Example usage
 -------------

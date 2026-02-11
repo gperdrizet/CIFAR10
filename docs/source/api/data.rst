@@ -29,6 +29,7 @@ The data module provides a flexible three-step data loading workflow:
 Key features:
 
 * Support for torchvision datasets (CIFAR-10, MNIST, etc.) and custom ImageFolder datasets
+* Automatic dataset download if not present (for PyTorch built-in datasets)
 * Single transform applied to both training and test data
 * Flexible splitting: 2-way (train/val) or 3-way (train/val/test) with integer sizes
 * Three memory strategies: lazy loading, CPU preloading, or GPU preloading
@@ -60,16 +61,14 @@ Basic workflow (CIFAR-10 with GPU preloading):
        data_source=datasets.CIFAR10,
        transform=transform,
        train=True,
-       download=True,
-       root=Path('./data/cifar10')
+       root='./data/cifar10'  # Will download if not present
    )
    
    test_dataset = load_dataset(
        data_source=datasets.CIFAR10,
        transform=transform,
        train=False,
-       download=True,
-       root=Path('./data/cifar10')
+       root='./data/cifar10'
    )
 
    # Step 2: Prepare splits (2-way: train/val from train_dataset)
@@ -111,7 +110,7 @@ With data augmentation (lazy loading):
        data_source=datasets.CIFAR10,
        transform=train_transform,
        train=True,
-       root=Path('./data/cifar10')
+       root='./data/cifar10'
    )
    
    # Load test data without augmentation
@@ -119,7 +118,7 @@ With data augmentation (lazy loading):
        data_source=datasets.CIFAR10,
        transform=eval_transform,
        train=False,
-       root=Path('./data/cifar10')
+       root='./data/cifar10'
    )
 
    # Prepare splits
@@ -150,7 +149,7 @@ With data augmentation (lazy loading):
 
    # Load only training data (no test set available)
    train_dataset = load_dataset(
-       data_source=Path('./my_dataset'),
+       data_source='./my_dataset',  # Path to directory with train/test subdirs
        transform=transform,
        train=True
    )
