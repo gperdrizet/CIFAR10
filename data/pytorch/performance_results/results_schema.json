@@ -1,0 +1,62 @@
+{
+  "description": "Schema for CIFAR-10 model performance results files",
+  "file_format": "pickle (.pkl)",
+  "version": "1.0",
+  "schema": {
+    "true_labels": {
+      "type": "numpy.ndarray",
+      "dtype": "int64",
+      "shape": "(n_samples,)",
+      "description": "Ground truth labels from test set",
+      "values": "Integer class indices (0-9)"
+    },
+    "predictions": {
+      "type": "numpy.ndarray",
+      "dtype": "int64",
+      "shape": "(n_samples,)",
+      "description": "Predicted class labels from model",
+      "values": "Integer class indices (0-9)"
+    },
+    "all_probs": {
+      "type": "numpy.ndarray",
+      "dtype": "float32",
+      "shape": "(n_samples, 10)",
+      "description": "Predicted probabilities for all classes",
+      "values": "Softmax probabilities for each of 10 classes"
+    },
+    "test_accuracy": {
+      "type": "float",
+      "description": "Overall test set accuracy",
+      "values": "Accuracy percentage (0-100)"
+    },
+    "total_params": {
+      "type": "int",
+      "description": "Total number of model parameters",
+      "values": "Count of all parameters (trainable + non-trainable)"
+    },
+    "trainable_params": {
+      "type": "int",
+      "description": "Number of trainable model parameters",
+      "values": "Count of parameters that are updated during training"
+    }
+  },
+  "class_mapping": {
+    "0": "airplane",
+    "1": "automobile",
+    "2": "bird",
+    "3": "cat",
+    "4": "deer",
+    "5": "dog",
+    "6": "frog",
+    "7": "horse",
+    "8": "ship",
+    "9": "truck"
+  },
+  "notes": [
+    "All results files follow this schema",
+    "Files are saved using Python's pickle module",
+    "Load with: pickle.load(open('filename.pkl', 'rb'))",
+    "Test set size is typically 10,000 samples for CIFAR-10",
+    "Model size (MB) can be calculated as: (total_params * 4) / (1024 ** 2)"
+  ]
+}
