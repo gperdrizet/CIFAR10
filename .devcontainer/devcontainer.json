@@ -66,9 +66,9 @@
 
 	// Use 'postCreateCommand' to run commands once after the container is created
 	// Makes empty directories for logs and models, and pre-downloads CIFAR-10 data
-	"postCreateCommand": "mkdir -p models/pytorch",
+	"postCreateCommand": "mkdir -p models/pytorch && pip install -e .",
 
 	// Use 'postAttachCommand' to install package in editable mode on each attach
 	// This ensures the package is always up to date with local changes
-	"postAttachCommand": "pip install -e ."
+	"postAttachCommand": ""
 }
