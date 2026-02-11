@@ -14,6 +14,7 @@ np.random.seed(315)
 
 # Device configuration
 DEVICE = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+print(f'Using device: {DEVICE}')
 
 # Suppress Optuna info messages (show only warnings and errors)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
