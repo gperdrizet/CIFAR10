@@ -106,7 +106,8 @@ def train_trial(
     train_loader: DataLoader,
     val_loader: DataLoader,
     n_epochs: int,
-    trial: optuna.Trial
+    trial: optuna.Trial,
+    early_stopping_patience: int = None
 ) -> float:
     '''Train a model for a single Optuna trial with pruning support.
     
@@ -118,11 +119,14 @@ def train_trial(
         val_loader: DataLoader for validation data
         n_epochs: Number of epochs to train
         trial: Optuna trial object for reporting and pruning
+        early_stopping_patience: Number of epochs to wait before stopping if validation loss doesn't improve (None to disable)
     
     Returns:
         Best validation accuracy achieved during training
     '''
     best_val_accuracy = 0.0
+    best_val_loss = float('inf')
+    patience_counter = 0
     
     for epoch in range(n_epochs):
 
@@ -140,16 +144,31 @@ def train_trial(
         model.eval()
         val_correct = 0
         val_total = 0
+        val_loss = 0.0
         
         with torch.no_grad():
             for images, labels in val_loader:
                 outputs = model(images)
+                loss = criterion(outputs, labels)
+                val_loss += loss.item()
                 _, predicted = torch.max(outputs.data, 1)
                 val_total += labels.size(0)
                 val_correct += (predicted == labels).sum().item()
         
+        avg_val_loss = val_loss / len(val_loader)
         val_accuracy = 100 * val_correct / val_total
         best_val_accuracy = max(best_val_accuracy, val_accuracy)
+        
+        # Early stopping based on validation loss
+        if early_stopping_patience is not None:
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+            
+            if patience_counter >= early_stopping_patience:
+                break
         
         # Report intermediate value for pruning
         trial.report(val_accuracy, epoch)
@@ -168,7 +187,8 @@ def create_objective(
     device: torch.device,
     num_classes: int,
     in_channels: int = 3,
-    search_space: dict = None
+    search_space: dict = None,
+    early_stopping_patience: int = None
 ) -> Callable[[optuna.Trial], float]:
     '''Create an Optuna objective function for CNN hyperparameter optimization.
     
@@ -183,6 +203,7 @@ def create_objective(
         num_classes: Number of output classes (required, e.g., 10 for CIFAR-10)
         in_channels: Number of input channels (default: 3 for RGB images, 1 for grayscale)
         search_space: Dictionary defining hyperparameter search space (default: None)
+        early_stopping_patience: Number of epochs to wait before stopping if validation loss doesn't improve (None to disable, default: None)
     
     Returns:
         Objective function for optuna.Study.optimize()
@@ -193,7 +214,8 @@ def create_objective(
         ...     transform=transform,
         ...     n_epochs=50, 
         ...     device=device,
-        ...     num_classes=10
+        ...     num_classes=10,
+        ...     early_stopping_patience=5
         ... )
         >>> study = optuna.create_study(direction='maximize')
         >>> study.optimize(objective, n_trials=100)
@@ -303,7 +325,8 @@ def create_objective(
                 train_loader=train_loader,
                 val_loader=val_loader,
                 n_epochs=n_epochs,
-                trial=trial
+                trial=trial,
+                early_stopping_patience=early_stopping_patience
             )
 
         except RuntimeError as e:
