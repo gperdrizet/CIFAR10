@@ -332,11 +332,12 @@ def create_objective(
         except RuntimeError as e:
             # Catch architecture errors (e.g., dimension mismatches)
             torch.cuda.empty_cache()
-            raise optuna.TrialPruned(f'RuntimeError with params: {trial.params} - {str(e)}')
+            # Let Optuna mark this as FAILED (not PRUNED)
+            raise RuntimeError(f'RuntimeError with params: {trial.params} - {str(e)}')
         
-        except torch.cuda.OutOfMemoryError:
-            # Clear CUDA cache and skip this trial
+        except torch.cuda.OutOfMemoryError as e:
+            # Clear CUDA cache and let Optuna mark this as FAILED
             torch.cuda.empty_cache()
-            raise optuna.TrialPruned(f'CUDA OOM with params: {trial.params}')
+            raise RuntimeError(f'CUDA OOM with params: {trial.params}') from e
     
     return objective
