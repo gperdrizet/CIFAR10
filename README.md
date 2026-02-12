@@ -29,11 +29,7 @@ CIFAR-10 consists of 60,000 32×32 color images across 10 classes:
 
 ## Results
 
-### Model performance metrics
-
 ![Model Metrics](docs/assets/model_metrics.png)
-
-### Per-class accuracy
 
 ![Per-class Accuracy](docs/assets/per_class_accuracy.png)
 
