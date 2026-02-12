@@ -25,26 +25,30 @@ def create_cnn(
     conv_dropout_rate: float,
     fc_dropout_rate: float,
     num_classes: int,
-    in_channels: int = 3
+    in_channels: int = 3,
+    pool_frequency: int = 2
 ) -> nn.Sequential:
     '''Create a CNN with configurable architecture.
     
     This function builds a flexible CNN architecture with conv blocks that
     progressively double filters every 2 blocks for deeper networks.
     Each conv block contains: 2 Conv layers + BatchNorm + ReLU + Conditional MaxPool + Dropout.
-    MaxPooling is applied every 2 blocks (and always after the last block) to enable
-    deeper architectures without spatial dimension collapse. For 32x32 inputs, supports
-    up to ~10 conv blocks.
+    MaxPooling frequency is configurable to support deeper architectures without
+    spatial dimension collapse. For 32x32 inputs:
+      - pool_frequency=2: up to 10 blocks (5 pools)
+      - pool_frequency=3: up to 15 blocks (5 pools)
+      - pool_frequency=4: up to 20 blocks (5 pools)
     Uses adaptive pooling before classifier to handle variable spatial dimensions.
     
     Args:
-        n_conv_blocks: Number of convolutional blocks (1-10 for 32x32 inputs)
+        n_conv_blocks: Number of convolutional blocks
         initial_filters: Number of filters in first conv block (doubles every 2 blocks)
         n_fc_layers: Number of fully connected layers before output (1-5)
         conv_dropout_rate: Dropout probability after convolutional blocks
         fc_dropout_rate: Dropout probability in fully connected layers
         num_classes: Number of output classes (required)
         in_channels: Number of input channels (default: 3 for RGB images)
+        pool_frequency: Apply MaxPool every N blocks (default: 2)
     
     Returns:
         nn.Sequential model
@@ -68,8 +72,8 @@ def create_cnn(
         layers.append(nn.BatchNorm2d(out_channels))
         layers.append(nn.ReLU())
         
-        # Pool every 2 blocks, or after the last block (enables deeper architectures)
-        if (block_idx + 1) % 2 == 0 or (block_idx + 1) == n_conv_blocks:
+        # Pool every N blocks, or after the last block (enables deeper architectures)
+        if (block_idx + 1) % pool_frequency == 0 or (block_idx + 1) == n_conv_blocks:
             layers.append(nn.MaxPool2d(2, 2))
         
         layers.append(nn.Dropout(conv_dropout_rate))
@@ -114,7 +118,8 @@ def train_trial(
     n_epochs: int,
     trial: optuna.Trial,
     early_stopping_patience: int = None,
-    min_delta: float = 0.0
+    min_delta: float = 0.0,
+    scheduler = None
 ) -> float:
     '''Train a model for a single Optuna trial with pruning support.
     
@@ -128,6 +133,7 @@ def train_trial(
         trial: Optuna trial object for reporting and pruning
         early_stopping_patience: Number of epochs to wait before stopping if validation loss doesn't improve (None to disable)
         min_delta: Minimum change in validation loss to qualify as an improvement (default: 0.0)
+        scheduler: Optional learning rate scheduler (e.g., CosineAnnealingLR, StepLR)
     
     Returns:
         Best validation accuracy achieved during training
@@ -147,6 +153,10 @@ def train_trial(
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
+        
+        # Step scheduler at end of epoch (if provided)
+        if scheduler is not None:
+            scheduler.step()
         
         # Validation phase
         model.eval()
@@ -254,6 +264,12 @@ def create_objective(
         conv_dropout_rate = trial.suggest_float('conv_dropout_rate', *search_space['conv_dropout_rate'])
         fc_dropout_rate = trial.suggest_float('fc_dropout_rate', *search_space['fc_dropout_rate'])
         
+        # Pool frequency (optional, defaults to 2)
+        if 'pool_frequency' in search_space:
+            pool_frequency = trial.suggest_categorical('pool_frequency', search_space['pool_frequency'])
+        else:
+            pool_frequency = 2
+        
         # Handle learning rate with optional log scale
         lr_params = search_space['learning_rate']
         learning_rate = trial.suggest_float(
@@ -316,7 +332,8 @@ def create_objective(
                 conv_dropout_rate=conv_dropout_rate,
                 fc_dropout_rate=fc_dropout_rate,
                 num_classes=num_classes,
-                in_channels=in_channels
+                in_channels=in_channels,
+                pool_frequency=pool_frequency
             ).to(device)
             
             # Define optimizer
