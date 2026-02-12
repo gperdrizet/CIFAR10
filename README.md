@@ -21,8 +21,11 @@ CIFAR-10 consists of 60,000 32×32 color images across 10 classes:
 1. [`01-DNN.ipynb`](notebooks/01-DNN.ipynb) - Baseline fully-connected deep neural network on grayscale images
 2. [`02-CNN.ipynb`](notebooks/02-CNN.ipynb) - Convolutional neural network to exploit spatial relationships
 3. [`03-RGB-CNN.ipynb`](notebooks/03-RGB-CNN.ipynb) - CNN modified to process full RGB color information
-4. [`04-optimized-CNN.ipynb`](notebooks/04-optimized-CNN.ipynb) - Bayesian hyperparameter optimization with Optuna
-5. [`05-augmented-CNN.ipynb`](notebooks/05-augmented-CNN.ipynb) - Data augmentation for improved generalization
+4. [`04-architecture_optimization.ipynb`](notebooks/04-architecture_optimization.ipynb) - Optuna optimization of CNN architecture (conv blocks, filters, dropout)
+5. [`05-training-optimization.ipynb`](notebooks/05-training-optimization.ipynb) - Optuna optimization of training hyperparameters (optimizer, learning rate, weight decay)
+6. [`06-augmented-CNN.ipynb`](notebooks/06-augmented-CNN.ipynb) - Optimized architecture + training with data augmentation
+7. [`07-resnet50.ipynb`](notebooks/07-resnet50.ipynb) - Transfer learning with pre-trained ResNet50
+8. [`08-results.ipynb`](notebooks/08-results.ipynb) - Model comparison and performance analysis
 
 ## Getting started
 
@@ -60,10 +63,12 @@ Once the container environment loads, you should be all set - you can start runn
 
 Models from each experiment are saved in `models/pytorch/`:
 - `dnn.pth` - Baseline DNN
-- `cnn.pth` - Basic CNN
+- `cnn.pth` - Basic CNN (grayscale)
 - `rgb_cnn.pth` - RGB CNN
-- `optimized_cnn.pth` - Hyperparameter-optimized CNN
-- `augmented_cnn.pth` - Optimized CNN trained on augmented data
+- `architecture_optimized_cnn.pth` - Optuna-optimized architecture
+- `training_optimized_cnn.pth` - Optimized architecture + training hyperparameters
+- `augmented_cnn.pth` - Optimized CNN trained with data augmentation
+- `resnet50.pth` - Fine-tuned ResNet50
 
 ## Environment
 
