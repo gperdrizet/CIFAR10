@@ -18,6 +18,15 @@ from image_classification_tools.pytorch.data import (
 )
 
 
+class TrialFailedError(Exception):
+    '''Exception raised when an Optuna trial fails (e.g., OOM, dimension collapse).
+    
+    Use with study.optimize(catch=(TrialFailedError,)) to mark trials as FAIL
+    instead of crashing the optimization.
+    '''
+    pass
+
+
 def create_cnn(
     n_conv_blocks: int,
     initial_filters: int,
@@ -366,27 +375,32 @@ def create_objective(
                 min_delta=min_delta
             )
 
+        except torch.cuda.OutOfMemoryError as e:
+            # Catch OOM first (it's a subclass of RuntimeError)
+            torch.cuda.empty_cache()
+            trial.set_user_attr('failure_reason', 'cuda_oom')
+            trial.set_user_attr('error_message', str(e))
+            # Raise to mark trial as FAIL (requires catch= in study.optimize)
+            raise TrialFailedError(f'CUDA OOM: {e}')
+        
         except RuntimeError as e:
             # Catch architecture errors (e.g., dimension collapse, layer mismatches)
             error_msg = str(e)
             torch.cuda.empty_cache()
             
-            # Check if this is a dimension collapse error
+            # Check if this is a dimension/OOM error
             if 'Output size is too small' in error_msg or 'Calculated output size' in error_msg:
                 # Report to trial as user attribute for debugging
                 trial.set_user_attr('failure_reason', 'dimension_collapse')
                 trial.set_user_attr('error_message', error_msg)
-                # Return worst possible score to mark trial as failed
-                return 0.0
+                raise TrialFailedError(f'Dimension collapse: {error_msg}')
+            elif 'out of memory' in error_msg.lower():
+                # Sometimes OOM is wrapped in RuntimeError
+                trial.set_user_attr('failure_reason', 'cuda_oom')
+                trial.set_user_attr('error_message', error_msg)
+                raise TrialFailedError(f'CUDA OOM: {error_msg}')
             else:
                 # Other RuntimeErrors should still crash (unexpected issues)
                 raise RuntimeError(f'RuntimeError with params: {trial.params} - {error_msg}')
-        
-        except torch.cuda.OutOfMemoryError as e:
-            # Clear CUDA cache and mark trial as failed
-            torch.cuda.empty_cache()
-            trial.set_user_attr('failure_reason', 'cuda_oom')
-            # Return worst possible score instead of crashing
-            return 0.0
     
     return objective

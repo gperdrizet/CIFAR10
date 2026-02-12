@@ -15,7 +15,7 @@ search and hyperparameter tuning. It includes:
 * **Dynamic CNN architecture** with configurable depth, width, and components
 * **Flexible search spaces** defined via dictionaries
 * **Automatic trial pruning** for faster optimization
-* **Error handling** for OOM and architecture mismatches
+* **Error handling** for OOM and architecture mismatches via ``TrialFailedError``
 
 Key components
 --------------
@@ -40,8 +40,7 @@ Factory function that creates an Optuna objective for hyperparameter search:
 
 * Accepts configurable search space dictionary
 * Creates data loaders per trial with suggested batch size
-* Handles dimension collapse errors gracefully (returns 0.0 score)
-* Handles CUDA out-of-memory errors gracefully (returns 0.0 score)
+* Raises ``TrialFailedError`` on dimension collapse or CUDA OOM
 * Supports MedianPruner for early stopping
 * Records failure reasons as trial attributes for debugging
 
@@ -49,6 +48,21 @@ train_trial
 ~~~~~~~~~~~
 
 Trains a model for a single Optuna trial with pruning support.
+
+TrialFailedError
+~~~~~~~~~~~~~~~~
+
+Custom exception raised when a trial fails due to:
+
+* CUDA out-of-memory errors
+* Dimension collapse (spatial size becoming 0)
+* Other unrecoverable architecture errors
+
+Use with ``study.optimize(catch=(TrialFailedError,))`` to mark trials as **FAIL** 
+state instead of crashing the optimization. Failed trials include:
+
+* ``trial.user_attrs['failure_reason']``: Either ``'cuda_oom'`` or ``'dimension_collapse'``
+* ``trial.user_attrs['error_message']``: Full error message for debugging
 
 Example usage
 -------------
@@ -92,9 +106,11 @@ Basic hyperparameter optimization for MNIST:
        search_space=search_space
    )
 
-   # Run optimization
+   # Run optimization (catch TrialFailedError to handle OOM/dimension errors)
+   from image_classification_tools.pytorch.hyperparameter_optimization import TrialFailedError
+   
    study = optuna.create_study(direction='maximize')
-   study.optimize(objective, n_trials=50)
+   study.optimize(objective, n_trials=50, catch=(TrialFailedError,))
 
    # Get best parameters
    print(f"Best accuracy: {study.best_trial.value:.2f}%")
@@ -118,7 +134,9 @@ With persistent storage:
        pruner=optuna.pruners.MedianPruner(n_warmup_steps=5)
    )
 
-   study.optimize(objective, n_trials=200)
+   from image_classification_tools.pytorch.hyperparameter_optimization import TrialFailedError
+   
+   study.optimize(objective, n_trials=200, catch=(TrialFailedError,))
 
 Creating the final model:
 
@@ -172,6 +190,7 @@ Notes
 
 **Error handling**:
 
-* Dimension collapse errors (e.g., spatial size becoming 0) return score of 0.0
-* CUDA out-of-memory errors are caught and return score of 0.0
+* Dimension collapse and CUDA OOM errors raise ``TrialFailedError``
+* Use ``catch=(TrialFailedError,)`` in ``study.optimize()`` to mark trials as FAIL
 * Failure reasons stored as trial attributes: ``trial.user_attrs['failure_reason']``
+* Query failed trials: ``[t for t in study.trials if t.state == optuna.trial.TrialState.FAIL]``

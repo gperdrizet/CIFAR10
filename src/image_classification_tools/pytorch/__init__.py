@@ -19,7 +19,8 @@ from image_classification_tools.pytorch.plotting import (
 from image_classification_tools.pytorch.hyperparameter_optimization import (
     create_cnn,
     train_trial,
-    create_objective
+    create_objective,
+    TrialFailedError
 )
 
 __all__ = [
@@ -42,5 +43,6 @@ __all__ = [
     # Hyperparameter optimization
     'create_cnn',
     'train_trial',
-    'create_objective'
+    'create_objective',
+    'TrialFailedError'
 ]
