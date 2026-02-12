@@ -24,11 +24,13 @@ MODELS_DIR = Path('../models/pytorch')
 RESULTS_DIR = Path('../data/pytorch/performance_results')
 DATA_DIR = Path('../data/pytorch/cifar10')
 OPTUNA_DB_PATH = Path('../data/pytorch/cnn_optimization.db')
+DOCS_DIR = Path('../docs')
 
 # Make sure directories exist
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+(DOCS_DIR / 'assets').mkdir(parents=True, exist_ok=True)
 
 # Optuna storage URL (use absolute path for SQLite)
 OPTUNA_STORAGE_URL = f'sqlite:///{OPTUNA_DB_PATH.resolve()}'

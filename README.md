@@ -27,6 +27,16 @@ CIFAR-10 consists of 60,000 32×32 color images across 10 classes:
 7. [`07-resnet50.ipynb`](notebooks/07-resnet50.ipynb) - Transfer learning with pre-trained ResNet50
 8. [`08-results.ipynb`](notebooks/08-results.ipynb) - Model comparison and performance analysis
 
+## Results
+
+### Model performance metrics
+
+![Model Metrics](docs/assets/model_metrics.png)
+
+### Per-class accuracy
+
+![Per-class Accuracy](docs/assets/per_class_accuracy.png)
+
 ## Getting started
 
 ### Prerequisites
