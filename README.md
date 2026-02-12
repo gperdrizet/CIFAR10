@@ -16,6 +16,8 @@ CIFAR-10 consists of 60,000 32×32 color images across 10 classes:
 - **Test set**: 10,000 images
 - **Classes**: airplane, automobile, bird, cat, deer, dog, frog, horse, ship, truck
 
+![CIFAR-10 Examples](docs/assets/cifar10_examples.png)
+
 ## The models
 
 1. [`01-DNN.ipynb`](notebooks/01-DNN.ipynb) - Baseline fully-connected deep neural network on grayscale images
