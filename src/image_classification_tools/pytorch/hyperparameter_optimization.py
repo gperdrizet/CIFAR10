@@ -35,12 +35,13 @@ def create_cnn(
     fc_dropout_rate: float,
     num_classes: int,
     in_channels: int = 3,
-    pool_frequency: int = 2
+    pool_frequency: int = 2,
+    filter_double_frequency: int = 2
 ) -> nn.Sequential:
     '''Create a CNN with configurable architecture.
     
     This function builds a flexible CNN architecture with conv blocks that
-    progressively double filters every 2 blocks for deeper networks.
+    progressively double filters at a configurable frequency.
     Each conv block contains: 2 Conv layers + BatchNorm + ReLU + Conditional MaxPool + Dropout.
     MaxPooling frequency is configurable to support deeper architectures without
     spatial dimension collapse. For 32x32 inputs:
@@ -51,13 +52,14 @@ def create_cnn(
     
     Args:
         n_conv_blocks: Number of convolutional blocks
-        initial_filters: Number of filters in first conv block (doubles every 2 blocks)
+        initial_filters: Number of filters in first conv block
         n_fc_layers: Number of fully connected layers before output (1-5)
         conv_dropout_rate: Dropout probability after convolutional blocks
         fc_dropout_rate: Dropout probability in fully connected layers
         num_classes: Number of output classes (required)
         in_channels: Number of input channels (default: 3 for RGB images)
         pool_frequency: Apply MaxPool every N blocks (default: 2)
+        filter_double_frequency: Double filters every N blocks (default: 2, use 3-4 for ResNet-like growth)
     
     Returns:
         nn.Sequential model
@@ -65,11 +67,12 @@ def create_cnn(
 
     layers = []
     current_channels = in_channels
+    spatial_size = 32  # CIFAR-10 input size
     
     # Convolutional blocks
     for block_idx in range(n_conv_blocks):
-        # Double filters every 2 blocks (slower growth for deeper networks)
-        out_channels = initial_filters * (2 ** (block_idx // 2))
+        # Double filters every N blocks (configurable growth rate)
+        out_channels = initial_filters * (2 ** (block_idx // filter_double_frequency))
         
         # First conv in block
         layers.append(nn.Conv2d(current_channels, out_channels, kernel_size=3, padding=1))
@@ -81,9 +84,11 @@ def create_cnn(
         layers.append(nn.BatchNorm2d(out_channels))
         layers.append(nn.ReLU())
         
-        # Pool every N blocks, or after the last block (enables deeper architectures)
-        if (block_idx + 1) % pool_frequency == 0 or (block_idx + 1) == n_conv_blocks:
+        # Pool every N blocks, but only if spatial size allows (min 1x1 before adaptive pool)
+        should_pool = (block_idx + 1) % pool_frequency == 0
+        if should_pool and spatial_size > 1:
             layers.append(nn.MaxPool2d(2, 2))
+            spatial_size //= 2
         
         layers.append(nn.Dropout(conv_dropout_rate))
         
@@ -279,6 +284,12 @@ def create_objective(
         else:
             pool_frequency = 2
         
+        # Filter double frequency (optional, defaults to 2)
+        if 'filter_double_frequency' in search_space:
+            filter_double_frequency = trial.suggest_categorical('filter_double_frequency', search_space['filter_double_frequency'])
+        else:
+            filter_double_frequency = 2
+        
         # Handle learning rate with optional log scale
         lr_params = search_space['learning_rate']
         learning_rate = trial.suggest_float(
@@ -342,7 +353,8 @@ def create_objective(
                 fc_dropout_rate=fc_dropout_rate,
                 num_classes=num_classes,
                 in_channels=in_channels,
-                pool_frequency=pool_frequency
+                pool_frequency=pool_frequency,
+                filter_double_frequency=filter_double_frequency
             ).to(device)
             
             # Define optimizer
