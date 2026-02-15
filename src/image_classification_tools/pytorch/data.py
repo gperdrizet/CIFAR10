@@ -1,732 +1,836 @@
-'''Data loading and preprocessing functions for image classification datasets.
+'''Data loading and preprocessing for image classification datasets.
 
-This module provides utilities for loading datasets (including CIFAR-10) and creating
-PyTorch DataLoaders with support for custom transforms and device preloading.
+This module provides a simplified, unified API for loading datasets, splitting them,
+and creating PyTorch DataLoaders with support for GPU/CPU preloading and data augmentation.
 '''
 
 import json
 import shutil
+import warnings
+from dataclasses import dataclass
+from enum import Enum
+from multiprocessing import Pool
 from pathlib import Path
-from typing import Tuple, Callable
-from multiprocessing import Pool, cpu_count
-from functools import partial
+from typing import Tuple, Optional, Dict, List, Any
 
 import torch
-from torchvision import datasets, transforms
-from torchvision.utils import save_image
 from torch.utils.data import DataLoader, Dataset, TensorDataset, Subset
+from torchvision import datasets, transforms
 from tqdm import tqdm
 
 
-def load_dataset(
-    data_source: str | Path | type,
-    transform: transforms.Compose,
-    train: bool = True,
-    **dataset_kwargs
-) -> Dataset:
-    '''Load a single dataset from a directory or PyTorch dataset class.
+class AugmentationStrategy(Enum):
+    """Strategy for applying data augmentation."""
+    NONE = 'none'
+    ON_THE_FLY = 'on_the_fly'
+    PREGENERATED = 'pregenerated'
+
+
+@dataclass(frozen=True)
+class DataLoaders:
+    """Container for train/val/test DataLoaders with convenience methods.
     
-    This function provides a flexible interface for loading image classification datasets.
-    It supports both PyTorch built-in datasets (CIFAR-10, CIFAR-100, MNIST, etc.) and
-    custom datasets stored in directories following the ImageFolder structure.
+    Attributes:
+        train: Training DataLoader (or None if not in split)
+        val: Validation DataLoader (or None if not in split)
+        test: Test DataLoader (or None if not in split)
+        batch_size: Batch size used for all loaders
+        train_size: Number of training samples
+        val_size: Number of validation samples
+        test_size: Number of test samples
+        device: Device where data is loaded ('cpu', 'cuda', or None for lazy)
+    """
+    train: Optional[DataLoader]
+    val: Optional[DataLoader]
+    test: Optional[DataLoader]
+    batch_size: int
+    train_size: int
+    val_size: int
+    test_size: int
+    device: Optional[str]
     
-    Args:
-        data_source: Either a string or Path to a directory containing train/ or test/ subdirectory,
-                    or a PyTorch dataset class (e.g., datasets.CIFAR10)
-        transform: Transforms to apply to the data
-        train: If True, load training data. If False, load test data (default: True)
-        **dataset_kwargs: Additional keyword arguments passed to the dataset class
-                         (e.g., root='data/pytorch/cifar10')
+    def get_batch_sizes(self) -> Dict[str, int]:
+        """Get batch sizes for each split.
+        
+        Returns:
+            Dictionary with batch sizes for available splits
+        """
+        result = {}
+        if self.train is not None:
+            result['train'] = self.batch_size
+        if self.val is not None:
+            result['val'] = self.batch_size
+        if self.test is not None:
+            result['test'] = self.batch_size
+        return result
     
-    Returns:
-        Dataset object
+    def total_samples(self) -> Dict[str, int]:
+        """Get total sample counts for each split.
+        
+        Returns:
+            Dictionary with sample counts for available splits
+        """
+        result = {}
+        if self.train is not None:
+            result['train'] = self.train_size
+        if self.val is not None:
+            result['val'] = self.val_size
+        if self.test is not None:
+            result['test'] = self.test_size
+        return result
     
-    Raises:
-        TypeError: If data_source is not a Path or a PyTorch dataset class
-        ValueError: If directory-based dataset path does not exist
+    def split_info(self) -> str:
+        """Get formatted string with split information.
+        
+        Returns:
+            Human-readable string like "Train: 40,000 | Val: 10,000 | Test: 10,000"
+        """
+        parts = []
+        if self.train is not None:
+            parts.append(f"Train: {self.train_size:,}")
+        if self.val is not None:
+            parts.append(f"Val: {self.val_size:,}")
+        if self.test is not None:
+            parts.append(f"Test: {self.test_size:,}")
+        return " | ".join(parts)
+    
+    def memory_estimate(self) -> str:
+        """Estimate memory usage for preloaded data.
+        
+        Returns:
+            Human-readable string like "Estimated memory: 2.3 GB"
+            Returns "N/A (lazy loading)" if data not preloaded
+        """
+        if self.device is None:
+            return "N/A (lazy loading)"
+        
+        # Estimate: assume 32x32x3 RGB images with float32 (4 bytes per value)
+        bytes_per_image = 32 * 32 * 3 * 4
+        total_samples = self.train_size + self.val_size + self.test_size
+        total_bytes = total_samples * bytes_per_image
+        total_gb = total_bytes / (1024 ** 3)
+        
+        return f"Estimated memory: {total_gb:.2f} GB"
+
+
+class DataPipeline:
+    """Unified data loading pipeline with auto-detection and intelligent splitting.
+    
+    This class replaces the old 3-step workflow (load → split → create_dataloaders) with
+    a single, outcome-based API. User specifies desired splits, pipeline auto-detects
+    source capabilities and performs minimal operations to achieve the outcome.
     
     Examples:
-        # Load CIFAR-10 training data
-        train_dataset = load_dataset(
-            data_source=datasets.CIFAR10,
-            transform=transform,
-            train=True,
-            root='data/cifar10'
-        )
+        # Basic usage with GPU preloading
+        >>> loaders = DataPipeline(
+        ...     data_source=datasets.CIFAR10,
+        ...     split='train/val/test',
+        ...     train_transform=my_transform,
+        ...     eval_transform=my_transform,
+        ...     preload='gpu'
+        ... ).get_loaders()
+        >>> train_loader = loaders.train
         
-        # Load from ImageFolder
-        train_dataset = load_dataset(
-            data_source='data/my_dataset',
-            transform=transform,
-            train=True
-        )
-    '''
+        # With pregenerated augmentation
+        >>> loaders = DataPipeline(
+        ...     data_source=datasets.CIFAR10,
+        ...     split='train/val/test',
+        ...     train_transform=eval_transform,
+        ...     eval_transform=eval_transform,
+        ...     augmentation='pregenerated',
+        ...     pil_augmentations=my_pil_augs,
+        ...     cache_key='cifar10_strong_aug_v1',
+        ...     preload='cpu'
+        ... ).get_loaders()
+    """
     
-    if isinstance(data_source, (str, Path)):
-        data_source = Path(data_source)
-
-        # Directory-based dataset using ImageFolder
-        subdir = 'train' if train else 'test'
-        data_dir = data_source / subdir
+    def __init__(
+        self,
+        data_source: type | str | Path,
+        split: str,
+        root: Optional[str | Path] = None,
+        train_transform: Optional[transforms.Compose] = None,
+        eval_transform: Optional[transforms.Compose] = None,
+        preload: Optional[str] = None,
+        augmentation: str | AugmentationStrategy = 'none',
+        pil_augmentations: Optional[transforms.Compose] = None,
+        tensor_augmentations: Optional[transforms.Compose] = None,
+        cache_key: Optional[str] = None,
+        val_size: int = 10000,
+        test_size: int = 10000,
+        batch_size: int = 128,
+        num_workers: int = 0,
+        seed: int = 42,
+        shuffle_train: bool = True,
+        force_regenerate: bool = False,
+        **loader_kwargs
+    ):
+        """Initialize DataPipeline.
         
-        if not data_dir.exists():
-            raise ValueError(f'{"Training" if train else "Test"} directory not found: {data_dir}')
+        Args:
+            data_source: PyTorch dataset class (e.g., datasets.CIFAR10) or path to data directory
+            split: Desired split outcome. Must be one of: 'train', 'train/val', 'train/test', 'train/val/test'
+            root: Root directory for data (required for PyTorch datasets)
+            train_transform: Transform for training data (required, will fail if None)
+            eval_transform: Transform for validation/test data (required, will fail if None)
+            preload: Loading strategy: 'gpu', 'cpu', or None for lazy loading from disk
+            augmentation: Augmentation strategy: 'none', 'on_the_fly', or 'pregenerated'
+            pil_augmentations: Custom PIL augmentation transforms (flip, rotate, etc.)
+            tensor_augmentations: Custom tensor augmentation transforms (blur, erasing, etc.)
+            cache_key: Required string for pregenerated augmentation caching
+            val_size: Number of validation samples (default: 10000)
+            test_size: Number of test samples for 3-way splits (default: 10000)
+            batch_size: Batch size for all loaders (default: 128)
+            num_workers: Number of workers for DataLoader and augmentation (default: 0)
+            seed: Random seed for reproducible splits (default: 42)
+            shuffle_train: Whether to shuffle training data (default: True)
+            force_regenerate: Force regeneration of cached augmented data (default: False)
+            **loader_kwargs: Additional arguments passed to DataLoader
         
-        return datasets.ImageFolder(
-            root=data_dir,
-            transform=transform
-        )
+        Raises:
+            ValueError: If transforms are None, split format invalid, or incompatible config
+        """
+        self.data_source = data_source
+        self.split_str = split
+        self.root = Path(root) if root else None
+        self.train_transform = train_transform
+        self.eval_transform = eval_transform
+        self.preload = preload
+        self.augmentation = AugmentationStrategy(augmentation) if isinstance(augmentation, str) else augmentation
+        self.pil_augmentations = pil_augmentations
+        self.tensor_augmentations = tensor_augmentations
+        self.cache_key = cache_key
+        self.val_size = val_size
+        self.test_size = test_size
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.seed = seed
+        self.shuffle_train = shuffle_train
+        self.force_regenerate = force_regenerate
+        self.loader_kwargs = loader_kwargs
+        
+        # Validate configuration
+        self._validate_config()
+        
+        # Parse split string
+        self.splits_needed = self._parse_split(split)
+        
+        # Detect source capabilities
+        self.source_splits = self._detect_source_splits()
+        
+        # Plan operations
+        self.split_plan = self._plan_split_operations()
     
-    elif isinstance(data_source, type) and issubclass(data_source, Dataset):
-
-        # PyTorch dataset class (CIFAR-10, MNIST, etc.)
-        # Try loading without download first, then download if not found
-        try:
-            return data_source(
-                train=train,
-                download=False,
-                transform=transform,
-                **dataset_kwargs
-            )
-
-        except (RuntimeError, FileNotFoundError):
-
-            # Dataset not found on disk, download it
-            return data_source(
-                train=train,
-                download=True,
-                transform=transform,
-                **dataset_kwargs
-            )
-    
-    else:
-        raise TypeError(
-            f'data_source must be a Path or a PyTorch Dataset class, '
-            f'got {type(data_source).__name__}'
-        )
-
-
-def prepare_splits(
-    train_dataset: Dataset,
-    test_dataset: Dataset | None = None,
-    val_size: int = 10000,
-    test_size: int | None = None
-) -> Tuple[Dataset, Dataset, Dataset]:
-    '''Split training dataset into train/val(/test) splits.
-    
-    The splitting behavior depends on whether a separate test dataset is provided:
-    - If test_dataset is provided: Split train_dataset into train/val only (2-way split)
-    - If test_dataset is None: Split train_dataset into train/val/test (3-way split)
-    
-    Args:
-        train_dataset: Training dataset to split
-        test_dataset: Test dataset. If None, test set will be split from train_dataset.
-        val_size: Number of images to use for validation
-        test_size: Number of images to reserve for testing when test_dataset is None.
-                   Only used when test_dataset is None. If None when test_dataset is None,
-                   raises ValueError.
-    
-    Returns:
-        Tuple of (train_dataset, val_dataset, test_dataset)
-    
-    Examples:
-        # 2-way split: Pass separate test set
-        train_ds, val_ds, test_ds = prepare_splits(
-            train_dataset=my_train_data,
-            test_dataset=my_test_data,  # Use this for testing
-            val_size=10000  # 10,000 images for validation
-        )
-        
-        # 3-way split: No separate test set
-        train_ds, val_ds, test_ds = prepare_splits(
-            train_dataset=my_full_data,
-            test_dataset=None,  # Will split test from train_dataset
-            val_size=10000,  # 10,000 for validation
-            test_size=5000  # 5,000 for testing
-        )
-    '''
-    
-    if test_dataset is not None:
-
-        # 2-way split: train/val only, use provided test set
-        total_size = len(train_dataset)
-        
-        if val_size >= total_size:
-            raise ValueError(f'val_size ({val_size}) must be less than train_dataset size ({total_size})')
-        
-        indices = torch.randperm(total_size).tolist()
-        
-        val_indices = indices[:val_size]
-        train_indices = indices[val_size:]
-        
-        train_dataset_final = Subset(train_dataset, train_indices)
-        val_dataset_final = Subset(train_dataset, val_indices)
-        test_dataset_final = test_dataset
-        
-    else:
-
-        # 3-way split: train/val/test all from train_dataset
-        if test_size is None:
-            raise ValueError('test_size must be provided when test_dataset is None')
-        
-        total_size = len(train_dataset)
-        
-        if val_size + test_size >= total_size:
+    def _validate_config(self):
+        """Validate configuration and auto-correct incompatible settings with warnings."""
+        # Check transforms are provided
+        if self.train_transform is None:
             raise ValueError(
-                f'val_size ({val_size}) + test_size ({test_size}) must be less than '
-                f'train_dataset size ({total_size})'
+                "train_transform is required. Please provide a transforms.Compose object."
+            )
+        if self.eval_transform is None:
+            raise ValueError(
+                "eval_transform is required. Please provide a transforms.Compose object."
             )
         
-        indices = torch.randperm(total_size).tolist()
+        # Validate preload
+        if self.preload is not None and self.preload not in ['gpu', 'cpu']:
+            raise ValueError(
+                f"preload must be 'gpu', 'cpu', or None, got: {self.preload}"
+            )
         
-        val_indices = indices[:val_size]
-        test_indices = indices[val_size:val_size + test_size]
-        train_indices = indices[val_size + test_size:]
+        # Check augmentation + preload compatibility
+        if self.preload in ['gpu', 'cpu'] and self.augmentation == AugmentationStrategy.ON_THE_FLY:
+            warnings.warn(
+                "On-the-fly augmentation is not compatible with preloading. "
+                "Auto-correcting to 'pregenerated' augmentation.",
+                UserWarning
+            )
+            self.augmentation = AugmentationStrategy.PREGENERATED
         
-        train_dataset_final = Subset(train_dataset, train_indices)
-        val_dataset_final = Subset(train_dataset, val_indices)
-        test_dataset_final = Subset(train_dataset, test_indices)
-    
-    return train_dataset_final, val_dataset_final, test_dataset_final
-
-
-def create_dataloaders(
-    train_dataset: Dataset,
-    val_dataset: Dataset,
-    test_dataset: Dataset,
-    batch_size: int,
-    shuffle_train: bool = True,
-    num_workers: int = 0,
-    preload_to_memory: bool = True,
-    device: torch.device | None = None,
-    **kwargs
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    '''Create DataLoaders from prepared datasets with optional memory preloading.
-    
-    This function provides three memory management strategies:
-    1. Lazy loading (preload_to_memory=False): Data stays on disk, loaded per batch
-    2. CPU preloading (preload_to_memory=True, device=cpu): Entire dataset in RAM
-    3. GPU preloading (preload_to_memory=True, device=cuda): Entire dataset in VRAM
-    
-    Args:
-        train_dataset: Prepared training dataset
-        val_dataset: Prepared validation dataset
-        test_dataset: Prepared test dataset
-        batch_size: Batch size for all DataLoaders
-        shuffle_train: Whether to shuffle training data (default: True)
-        num_workers: Number of subprocesses for data loading (default: 0 for single process).
-                    Note: num_workers is ignored when preload_to_memory=True.
-        preload_to_memory: If True, convert datasets to tensors and load into memory.
-                          If False, keep as lazy-loading Dataset objects (default: True).
-        device: Device to preload tensors onto. Only used if preload_to_memory=True.
-               If None with preload_to_memory=True, defaults to CPU.
-               Common values: torch.device('cpu'), torch.device('cuda')
-        **kwargs: Additional keyword arguments passed to DataLoader
-                 (e.g., pin_memory=True, persistent_workers=True)
-    
-    Returns:
-        Tuple of (train_loader, val_loader, test_loader)
-    
-    Examples:
-        # Strategy 1: Lazy loading (large datasets)
-        train_loader, val_loader, test_loader = create_dataloaders(
-            train_ds, val_ds, test_ds,
-            batch_size=128,
-            num_workers=4,
-            pin_memory=True
-        )
+        # Check cache_key for pregenerated augmentation
+        if self.augmentation == AugmentationStrategy.PREGENERATED and self.cache_key is None:
+            raise ValueError(
+                "cache_key is required when augmentation='pregenerated'. "
+                "Provide a unique string identifier for caching (e.g., 'cifar10_aug_v1')."
+            )
         
-        # Strategy 2: CPU preloading (medium datasets)
-        train_loader, val_loader, test_loader = create_dataloaders(
-            train_ds, val_ds, test_ds,
-            batch_size=128,
-            preload_to_memory=True,
-            device=torch.device('cpu')
-        )
+        # Warn about inefficient pregenerated + lazy loading
+        if self.preload is None and self.augmentation == AugmentationStrategy.PREGENERATED:
+            warnings.warn(
+                "Pregenerated augmentation with lazy loading is inefficient. "
+                "Consider using preload='cpu' or 'gpu' for better performance.",
+                UserWarning
+            )
+    
+    def _parse_split(self, split_str: str) -> List[str]:
+        """Parse and validate split string.
         
-        # Strategy 3: GPU preloading (small datasets, fastest training)
-        train_loader, val_loader, test_loader = create_dataloaders(
-            train_ds, val_ds, test_ds,
-            batch_size=128,
-            preload_to_memory=True,
-            device=torch.device('cuda')
-        )
-    '''
-    
-    if preload_to_memory:
-    
-        # Preload datasets to memory
-        if device is None:
-            device = torch.device('cpu')
+        Args:
+            split_str: Split specification like 'train/val/test'
         
-        # Load train data
-        X_train = torch.stack([img for img, _ in train_dataset]).to(device)
-        y_train = torch.tensor([label for _, label in train_dataset]).to(device)
-        train_dataset_final = TensorDataset(X_train, y_train)
+        Returns:
+            List of split names like ['train', 'val', 'test']
         
-        # Load val data
-        X_val = torch.stack([img for img, _ in val_dataset]).to(device)
-        y_val = torch.tensor([label for _, label in val_dataset]).to(device)
-        val_dataset_final = TensorDataset(X_val, y_val)
+        Raises:
+            ValueError: If split format is invalid
+        """
+        import re
         
-        # Load test data
-        X_test = torch.stack([img for img, _ in test_dataset]).to(device)
-        y_test = torch.tensor([label for _, label in test_dataset]).to(device)
-        test_dataset_final = TensorDataset(X_test, y_test)
+        # Validate format: must be train with optional /val and/or /test
+        valid_patterns = [
+            r'^train$',
+            r'^train/val$',
+            r'^train/test$',
+            r'^train/val/test$'
+        ]
         
-        # When preloading, num_workers should be 0
-        num_workers = 0
-
-    else:
-
-        # Use datasets as-is for lazy loading
-        train_dataset_final = train_dataset
-        val_dataset_final = val_dataset
-        test_dataset_final = test_dataset
+        if not any(re.match(pattern, split_str) for pattern in valid_patterns):
+            raise ValueError(
+                f"Invalid split format: '{split_str}'. "
+                "Must be one of: 'train', 'train/val', 'train/test', 'train/val/test'"
+            )
+        
+        return split_str.split('/')
     
-    train_loader = DataLoader(
-        train_dataset_final,
-        batch_size=batch_size,
-        shuffle=shuffle_train,
-        num_workers=num_workers,
-        **kwargs
-    )
+    def _detect_source_splits(self) -> str:
+        """Detect if data source has pre-made splits.
+        
+        Returns:
+            'train+test' if source is PyTorch dataset with separate train/test
+            'single' if source is directory or single dataset
+        """
+        if isinstance(self.data_source, (str, Path)):
+            # Directory-based source
+            return 'single'
+        
+        # Check if it's a PyTorch dataset class with train parameter
+        try:
+            import inspect
+            sig = inspect.signature(self.data_source.__init__)
+            if 'train' in sig.parameters:
+                return 'train+test'
+        except (AttributeError, TypeError):
+            pass
+        
+        return 'single'
     
-    val_loader = DataLoader(
-        val_dataset_final,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        **kwargs
-    )
-    
-    test_loader = DataLoader(
-        test_dataset_final,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers,
-        **kwargs
-    )
-    
-    return train_loader, val_loader, test_loader
-
-
-def generate_augmented_data(
-    train_dataset: Dataset,
-    augmentation_transforms: torch.nn.Sequential,
-    augmentations_per_image: int,
-    save_dir: str | Path,
-    class_names: list[str] | None = None,
-    chunk_size: int = 5000,
-    force_reaugment: bool = False
-) -> None:
-    '''Generate augmented training data and save as ImageFolder-compatible directory structure.
-    
-    This function applies augmentation transforms to create multiple augmented versions of each
-    training image and saves them to disk in ImageFolder format. Images are processed in chunks
-    to avoid memory issues with large datasets.
-    
-    Args:
-        train_dataset: PyTorch Dataset containing training images
-        augmentation_transforms: nn.Sequential containing augmentation transforms to apply
-        augmentations_per_image: Number of augmented versions to create per image
-        save_dir: Directory path to save augmented images in ImageFolder format
-                 (will create class_0/, class_1/, etc. subdirectories)
-        class_names: Optional list of class names. If None, uses numeric class indices.
-        chunk_size: Number of images to process per chunk (default: 5000)
-        force_reaugment: If True, regenerate even if saved data exists
-    
-    Returns:
-        None (saves images to disk)
-    
-    Example:
-        >>> generate_augmented_data(
-        ...     train_dataset=train_dataset,
-        ...     augmentation_transforms=augmentation_transforms,
-        ...     augmentations_per_image=3,
-        ...     save_dir='data/cifar10_augmented',
-        ...     class_names=['airplane', 'automobile', ...],
-        ...     chunk_size=5000
-        ... )
-        >>> # Then load with existing pipeline:
-        >>> aug_dataset, _ = load_datasets(
-        ...     data_source=Path('data/cifar10_augmented'),
-        ...     transform=eval_transform
-        ... )
-    '''
-    
-    save_dir = Path(save_dir)
-    
-    # Check if data already exists
-    if save_dir.exists() and any(save_dir.iterdir()) and not force_reaugment:
-        print(f'Augmented data already exists at {save_dir}')
-        print('Use force_reaugment=True to regenerate')
-        return
-    
-    # Create directory structure with 'train' subdirectory for ImageFolder compatibility
-    if force_reaugment and save_dir.exists():
-        shutil.rmtree(save_dir)
-    
-    save_dir.mkdir(parents=True, exist_ok=True)
-    train_dir = save_dir / 'train'
-    train_dir.mkdir(exist_ok=True)
-    
-    # Get unique classes from dataset
-    print('Scanning dataset for classes...')
-    all_labels = set()
-    for _, label in train_dataset:
-        all_labels.add(label if isinstance(label, int) else label.item())
-    
-    unique_classes = sorted(all_labels)
-    
-    # Create class directories inside train/
-    for class_idx in unique_classes:
-        if class_names and class_idx < len(class_names):
-            class_dir = train_dir / class_names[class_idx]
+    def _plan_split_operations(self) -> Dict[str, Any]:
+        """Plan minimal split operations to achieve desired outcome.
+        
+        Returns:
+            Dictionary describing operations needed
+        """
+        plan = {
+            'load_train': False,
+            'load_test': False,
+            'split_train_into_train_val': False,
+            'split_train_into_all': False,
+            'val_size': self.val_size,
+            'test_size': self.test_size
+        }
+        
+        needs_val = 'val' in self.splits_needed
+        needs_test = 'test' in self.splits_needed
+        
+        if self.source_splits == 'train+test':
+            # Source has separate train and test
+            plan['load_train'] = True
+            
+            if needs_test:
+                plan['load_test'] = True
+            
+            if needs_val:
+                # Need to split train into train/val
+                plan['split_train_into_train_val'] = True
+        
         else:
-            class_dir = train_dir / f'class_{class_idx}'
-        class_dir.mkdir(exist_ok=True)
-    
-    print(f'Found {len(unique_classes)} classes')
-    print(f'Saving augmented images to {save_dir}')
-    
-    original_size = len(train_dataset)
-    num_chunks = (original_size + chunk_size - 1) // chunk_size
-    
-    print(f'Processing {original_size} images in {num_chunks} chunk(s)')
-    print(f'Generating {augmentations_per_image} augmentations per image')
-    
-    total_saved = 0
-    
-    # Process dataset in chunks
-    for chunk_idx in range(num_chunks):
-        start_idx = chunk_idx * chunk_size
-        end_idx = min((chunk_idx + 1) * chunk_size, original_size)
-        
-        print(f'\nChunk {chunk_idx + 1}/{num_chunks} (images {start_idx}-{end_idx-1})...')
-        
-        # Process each image in chunk
-        for idx in range(start_idx, end_idx):
-            img, label = train_dataset[idx]
-            label_val = label if isinstance(label, int) else label.item()
+            # Single dataset source
+            plan['load_train'] = True
             
-            # Determine class directory (inside train/)
-            if class_names and label_val < len(class_names):
-                class_dir = train_dir / class_names[label_val]
+            if needs_val and needs_test:
+                # 3-way split
+                plan['split_train_into_all'] = True
+            elif needs_val:
+                # 2-way split: train/val
+                plan['split_train_into_train_val'] = True
+            elif needs_test:
+                # 2-way split: train/test
+                plan['split_train_into_all'] = True
+                plan['val_size'] = 0
+        
+        return plan
+    
+    def _load_raw_dataset(self, train: bool) -> Dataset:
+        """Load raw dataset from source.
+        
+        Args:
+            train: Whether to load training or test data
+        
+        Returns:
+            PyTorch Dataset
+        """
+        if isinstance(self.data_source, (str, Path)):
+            # Directory-based dataset
+            data_dir = Path(self.data_source)
+            subdir = 'train' if train else 'test'
+            full_path = data_dir / subdir
+            
+            if not full_path.exists():
+                raise ValueError(f"Directory not found: {full_path}")
+            
+            # For augmentation, we need raw PIL images (no transform)
+            if self.augmentation == AugmentationStrategy.PREGENERATED:
+                return datasets.ImageFolder(root=full_path, transform=None)
             else:
-                class_dir = train_dir / f'class_{label_val}'
+                transform = self.train_transform if train else self.eval_transform
+                return datasets.ImageFolder(root=full_path, transform=transform)
+        
+        else:
+            # PyTorch dataset class
+            if self.root is None:
+                raise ValueError("root directory is required for PyTorch datasets")
             
-            # Save original image
-            img_name = f'img_{idx:06d}_orig.png'
-            save_image(img, class_dir / img_name)
-            total_saved += 1
+            # For augmentation, we need raw PIL images (no transform)
+            if self.augmentation == AugmentationStrategy.PREGENERATED:
+                transform = None
+            else:
+                transform = self.train_transform if train else self.eval_transform
             
-            # Generate and save augmented versions
-            for aug_idx in range(augmentations_per_image):
-
-                img_aug = augmentation_transforms(img.unsqueeze(0)).squeeze(0)
-                img_name = f'img_{idx:06d}_aug{aug_idx:02d}.png'
-                save_image(img_aug, class_dir / img_name)
-                total_saved += 1
+            try:
+                return self.data_source(
+                    root=self.root,
+                    train=train,
+                    download=False,
+                    transform=transform
+                )
+            except (RuntimeError, FileNotFoundError):
+                # Download if not found
+                print(f"Downloading {'train' if train else 'test'} dataset...")
+                return self.data_source(
+                    root=self.root,
+                    train=train,
+                    download=True,
+                    transform=transform
+                )
+    
+    def _create_splits(self, train_dataset: Dataset, test_dataset: Optional[Dataset] = None) -> Tuple[Dataset, Optional[Dataset], Optional[Dataset]]:
+        """Create train/val/test splits according to plan.
         
-        print(f'  Chunk {chunk_idx + 1} complete')
+        Args:
+            train_dataset: Training dataset
+            test_dataset: Test dataset (if available)
+        
+        Returns:
+            Tuple of (train, val, test) datasets (some may be None)
+        """
+        torch.manual_seed(self.seed)
+        
+        plan = self.split_plan
+        
+        if not plan['split_train_into_train_val'] and not plan['split_train_into_all']:
+            # No splitting needed
+            return train_dataset, None, test_dataset
+        
+        total_size = len(train_dataset)
+        
+        if plan['split_train_into_all']:
+            # 3-way split
+            val_size = plan['val_size']
+            test_size = plan['test_size'] if plan['test_size'] > 0 else self.test_size
+            
+            if val_size + test_size >= total_size:
+                raise ValueError(
+                    f"Cannot split: val_size ({val_size}) + test_size ({test_size}) "
+                    f"must be less than total size ({total_size})"
+                )
+            
+            indices = torch.randperm(total_size).tolist()
+            
+            val_indices = indices[:val_size]
+            test_indices = indices[val_size:val_size + test_size]
+            train_indices = indices[val_size + test_size:]
+            
+            train_split = Subset(train_dataset, train_indices)
+            val_split = Subset(train_dataset, val_indices)
+            test_split = Subset(train_dataset, test_indices)
+            
+            return train_split, val_split, test_split
+        
+        elif plan['split_train_into_train_val']:
+            # 2-way split: train/val
+            val_size = plan['val_size']
+            
+            if val_size >= total_size:
+                raise ValueError(
+                    f"val_size ({val_size}) must be less than total size ({total_size})"
+                )
+            
+            indices = torch.randperm(total_size).tolist()
+            
+            val_indices = indices[:val_size]
+            train_indices = indices[val_size:]
+            
+            train_split = Subset(train_dataset, train_indices)
+            val_split = Subset(train_dataset, val_indices)
+            
+            return train_split, val_split, test_dataset
+        
+        return train_dataset, None, test_dataset
     
-    print(f'\nAugmentation complete!')
-    print(f'  Total images saved: {total_saved}')
-    print(f'  Original images: {original_size}')
-    print(f'  Augmented images: {total_saved - original_size}')
-    print(f'  Augmentation factor: {total_saved / original_size:.1f}x')
-    print(f'  Location: {save_dir}')
+    def _apply_augmentation_on_the_fly(self, dataset: Dataset) -> Dataset:
+        """Wrap dataset to apply augmentation transforms on-the-fly.
+        
+        Args:
+            dataset: Dataset to wrap
+        
+        Returns:
+            Wrapped dataset with augmentation
+        """
+        # Create augmentation transform
+        if self.pil_augmentations is None:
+            # Default augmentations
+            aug_transform = transforms.Compose([
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomRotation(degrees=15),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+            ])
+        else:
+            aug_transform = self.pil_augmentations
+        
+        # Inline AugmentedSubset implementation
+        class AugmentedDataset(Dataset):
+            def __init__(self, subset, augmentation):
+                self.subset = subset
+                self.augmentation = augmentation
+            
+            def __len__(self):
+                return len(self.subset)
+            
+            def __getitem__(self, idx):
+                image, label = self.subset[idx]
+                if self.augmentation:
+                    image = self.augmentation(image)
+                return image, label
+        
+        return AugmentedDataset(dataset, aug_transform)
+    
+    def _generate_preaugmented_dataset(self, train_dataset: Dataset) -> Dataset:
+        """Generate preaugmented dataset with parallel processing.
+        
+        Args:
+            train_dataset: Training dataset (with raw PIL images)
+        
+        Returns:
+            TensorDataset with pregenerated augmented data
+        """
+        output_dir = self.root / 'augmented_cache' / self.cache_key
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Check cache
+        if not self.force_regenerate and (output_dir / 'augmented_images.pt').exists():
+            print(f"Loading cached augmented data from {output_dir}")
+            images = torch.load(output_dir / 'augmented_images.pt')
+            labels = torch.load(output_dir / 'augmented_labels.pt')
+            return TensorDataset(images, labels)
+        
+        # Default augmentations if not provided
+        if self.pil_augmentations is None:
+            pil_augs = transforms.Compose([
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomRotation(degrees=15),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+                transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+                transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
+            ])
+        else:
+            pil_augs = self.pil_augmentations
+        
+        if self.tensor_augmentations is None:
+            tensor_augs = transforms.Compose([
+                transforms.RandomApply([transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0))], p=0.1),
+                transforms.RandomErasing(p=0.2, scale=(0.02, 0.1)),
+            ])
+        else:
+            tensor_augs = self.tensor_augmentations
+        
+        # Convert to tensor and normalize (from train_transform)
+        to_tensor = transforms.ToTensor()
+        normalize = None
+        for t in self.train_transform.transforms:
+            if isinstance(t, transforms.Normalize):
+                normalize = t
+                break
+        
+        if normalize is None:
+            # Use default normalization
+            normalize = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+        
+        print(f"\nGenerating augmented dataset with {self.num_workers} workers...")
+        print(f"Source dataset: {len(train_dataset)} images")
+        print(f"Augmentations per image: 5")
+        print(f"Total augmented images: {len(train_dataset) * 5}")
+        
+        # Collect all images and labels
+        images_labels = []
+        for idx in tqdm(range(len(train_dataset)), desc="Loading images"):
+            img, label = train_dataset[idx]
+            images_labels.append((img, label))
+        
+        # Divide into chunks for parallel processing
+        chunk_size = max(1, len(images_labels) // max(1, self.num_workers))
+        chunks = []
+        for i in range(0, len(images_labels), chunk_size):
+            chunk = images_labels[i:i + chunk_size]
+            chunks.append((chunk, 5, pil_augs, tensor_augs, to_tensor, normalize))
+        
+        # Process in parallel
+        all_images = []
+        all_labels = []
+        
+        if self.num_workers > 0:
+            with Pool(processes=self.num_workers) as pool:
+                results = list(tqdm(
+                    pool.imap(_augment_batch_worker, chunks),
+                    total=len(chunks),
+                    desc="Generating augmented data"
+                ))
+        else:
+            # Serial processing
+            results = []
+            for chunk in tqdm(chunks, desc="Generating augmented data"):
+                results.append(_augment_batch_worker(chunk))
+        
+        # Collect results
+        for batch_images, batch_labels in results:
+            all_images.extend(batch_images)
+            all_labels.extend(batch_labels)
+        
+        # Stack into tensors
+        print("Stacking tensors...")
+        images_tensor = torch.stack(all_images)
+        labels_tensor = torch.tensor(all_labels, dtype=torch.long)
+        
+        # Save to cache
+        print(f"Saving to cache: {output_dir}")
+        torch.save(images_tensor, output_dir / 'augmented_images.pt')
+        torch.save(labels_tensor, output_dir / 'augmented_labels.pt')
+        
+        metadata = {
+            'cache_key': self.cache_key,
+            'original_size': len(train_dataset),
+            'augmented_size': len(all_images),
+            'n_augmentations': 5,
+        }
+        with open(output_dir / 'metadata.json', 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        return TensorDataset(images_tensor, labels_tensor)
+    
+    def _preload_to_device(self, dataset: Dataset, device_str: str, desc: str = "Preloading") -> TensorDataset:
+        """Preload dataset to CPU or GPU memory.
+        
+        Args:
+            dataset: Dataset to preload
+            device_str: 'cpu' or 'gpu'
+            desc: Description for progress bar
+        
+        Returns:
+            TensorDataset with data on device
+        """
+        device = torch.device('cuda' if device_str == 'gpu' else 'cpu')
+        
+        print(f"{desc} to {device_str.upper()}...")
+        
+        images = []
+        labels = []
+        
+        for img, label in tqdm(dataset, desc=desc):
+            images.append(img)
+            labels.append(label)
+        
+        images_tensor = torch.stack(images).to(device)
+        labels_tensor = torch.tensor(labels).to(device)
+        
+        return TensorDataset(images_tensor, labels_tensor)
+    
+    def get_loaders(self) -> DataLoaders:
+        """Create and return DataLoaders based on configuration.
+        
+        Returns:
+            DataLoaders object with train/val/test loaders and metadata
+        """
+        # Load datasets according to plan
+        train_raw = None
+        test_raw = None
+        
+        if self.split_plan['load_train']:
+            print(f"Loading train dataset...")
+            train_raw = self._load_raw_dataset(train=True)
+        
+        if self.split_plan['load_test']:
+            print(f"Loading test dataset...")
+            test_raw = self._load_raw_dataset(train=False)
+        
+        # Create splits
+        print("Creating splits...")
+        train_split, val_split, test_split = self._create_splits(train_raw, test_raw)
+        
+        # Apply augmentation if needed
+        if self.augmentation == AugmentationStrategy.PREGENERATED:
+            print("\nApplying pregenerated augmentation...")
+            train_split = self._generate_preaugmented_dataset(train_split)
+        elif self.augmentation == AugmentationStrategy.ON_THE_FLY and train_split is not None:
+            print("Setting up on-the-fly augmentation...")
+            train_split = self._apply_augmentation_on_the_fly(train_split)
+        
+        # Preload if requested
+        if self.preload is not None:
+            if train_split is not None and 'train' in self.splits_needed:
+                train_split = self._preload_to_device(train_split, self.preload, "Preloading train")
+            if val_split is not None:
+                val_split = self._preload_to_device(val_split, self.preload, "Preloading val")
+            if test_split is not None and 'test' in self.splits_needed:
+                test_split = self._preload_to_device(test_split, self.preload, "Preloading test")
+        
+        # Create DataLoaders
+        num_workers = 0 if self.preload else self.num_workers
+        
+        train_loader = None
+        val_loader = None
+        test_loader = None
+        
+        train_size = 0
+        val_size = 0
+        test_size = 0
+        
+        if train_split is not None and 'train' in self.splits_needed:
+            train_size = len(train_split)
+            train_loader = DataLoader(
+                train_split,
+                batch_size=self.batch_size,
+                shuffle=self.shuffle_train,
+                num_workers=num_workers,
+                **self.loader_kwargs
+            )
+        
+        if val_split is not None:
+            val_size = len(val_split)
+            val_loader = DataLoader(
+                val_split,
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=num_workers,
+                **self.loader_kwargs
+            )
+        
+        if test_split is not None and 'test' in self.splits_needed:
+            test_size = len(test_split)
+            test_loader = DataLoader(
+                test_split,
+                batch_size=self.batch_size,
+                shuffle=False,
+                num_workers=num_workers,
+                **self.loader_kwargs
+            )
+        
+        device_str = self.preload if self.preload else None
+        
+        return DataLoaders(
+            train=train_loader,
+            val=val_loader,
+            test=test_loader,
+            batch_size=self.batch_size,
+            train_size=train_size,
+            val_size=val_size,
+            test_size=test_size,
+            device=device_str
+        )
+    
+    @staticmethod
+    def compute_dataset_stats(
+        data_source: type,
+        root: str | Path,
+        num_samples: int = 5000
+    ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+        """Compute mean and std for dataset normalization.
+        
+        Args:
+            data_source: PyTorch dataset class (e.g., datasets.CIFAR10)
+            root: Root directory for data
+            num_samples: Number of samples to use for computation (default: 5000)
+        
+        Returns:
+            Tuple of (mean, std) where each is (R, G, B) tuple
+        
+        Example:
+            >>> mean, std = DataPipeline.compute_dataset_stats(
+            ...     datasets.CIFAR10,
+            ...     root='./data',
+            ...     num_samples=5000
+            ... )
+            >>> print(f"Mean: {mean}, Std: {std}")
+        """
+        print(f"Computing dataset statistics from {num_samples} samples...")
+        
+        # Load dataset with ToTensor only (no normalization)
+        dataset = data_source(
+            root=root,
+            train=True,
+            download=False,
+            transform=transforms.ToTensor()
+        )
+        
+        # Sample random indices
+        indices = torch.randperm(len(dataset))[:num_samples].tolist()
+        
+        # Collect samples
+        images = []
+        for idx in tqdm(indices, desc="Loading samples"):
+            img, _ = dataset[idx]
+            images.append(img)
+        
+        # Stack and compute stats
+        images_tensor = torch.stack(images)
+        mean = images_tensor.mean(dim=[0, 2, 3])
+        std = images_tensor.std(dim=[0, 2, 3])
+        
+        mean_tuple = tuple(mean.tolist())
+        std_tuple = tuple(std.tolist())
+        
+        print(f"Mean: {mean_tuple}")
+        print(f"Std: {std_tuple}")
+        
+        return mean_tuple, std_tuple
 
 
-class PreaugmentedDataset(Dataset):
-    """Dataset class for loading pre-augmented images stored as tensor files.
-    
-    This class loads augmented images that were pre-computed and saved to disk
-    as PyTorch tensor files. This is faster than computing augmentations on-the-fly
-    during training.
+def _augment_batch_worker(args):
+    """Worker function for parallel augmentation.
     
     Args:
-        data_dir: Path to directory containing augmented_images.pt and augmented_labels.pt
-        transform: Optional additional transforms to apply (e.g., extra augmentations)
-        
-    Example:
-        >>> dataset = PreaugmentedDataset('data/pytorch/augmented_cifar10')
-        >>> loader = DataLoader(dataset, batch_size=64, shuffle=True)
-    """
-    
-    def __init__(self, data_dir: str | Path, transform: transforms.Compose | None = None):
-        self.data_dir = Path(data_dir)
-        self.transform = transform
-        
-        # Load tensors
-        images_path = self.data_dir / 'augmented_images.pt'
-        labels_path = self.data_dir / 'augmented_labels.pt'
-        
-        if not images_path.exists():
-            raise FileNotFoundError(f"Augmented images not found: {images_path}")
-        if not labels_path.exists():
-            raise FileNotFoundError(f"Augmented labels not found: {labels_path}")
-        
-        print(f"Loading pre-augmented dataset from {self.data_dir}...")
-        self.images = torch.load(images_path, weights_only=True)
-        self.labels = torch.load(labels_path, weights_only=True)
-        print(f"Loaded {len(self.images)} images")
-    
-    def __len__(self) -> int:
-        return len(self.images)
-    
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
-        image = self.images[idx]
-        label = self.labels[idx].item()
-        
-        if self.transform:
-            image = self.transform(image)
-        
-        return image, label
-
-
-class AugmentedSubset(Dataset):
-    """Wrapper that applies augmentation transforms to a Subset dataset.
-    
-    This class is useful when you want to apply augmentation only to the training
-    split after performing train/val/test splitting. The underlying dataset should
-    use a basic transform (ToTensor + Normalize), and this wrapper adds augmentation
-    on top.
-    
-    Args:
-        subset: A Subset dataset (from prepare_splits)
-        augmentation: Transforms to apply for augmentation. These should be
-                     tensor transforms (applied after ToTensor/Normalize).
-    
-    Example:
-        >>> # Load with basic transform
-        >>> dataset = load_dataset(datasets.CIFAR10, eval_transform, root='data/')
-        >>> train_subset, val_subset, test_subset = prepare_splits(dataset, test_ds)
-        >>> 
-        >>> # Apply augmentation only to training
-        >>> augment = transforms.Compose([
-        ...     transforms.RandomHorizontalFlip(),
-        ...     transforms.RandomErasing(p=0.2)
-        ... ])
-        >>> train_augmented = AugmentedSubset(train_subset, augment)
-    """
-    
-    def __init__(self, subset: Subset, augmentation: transforms.Compose):
-        self.subset = subset
-        self.augmentation = augmentation
-    
-    def __len__(self) -> int:
-        return len(self.subset)
-    
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
-        image, label = self.subset[idx]
-        
-        if self.augmentation:
-            image = self.augmentation(image)
-        
-        return image, label
-
-
-def _augment_image_batch(args):
-    '''Worker function to augment a batch of images in parallel.
-    
-    Args:
-        args: Tuple of (images_labels, n_augmentations, pil_aug, tensor_aug, to_tensor)
-              where images_labels is list of (PIL_image, label) tuples
+        args: Tuple of (images_labels, n_augmentations, pil_aug, tensor_aug, to_tensor, normalize)
     
     Returns:
-        Tuple of (augmented_images, labels) as lists of tensors
-    '''
-    images_labels, n_augmentations, pil_aug, tensor_aug, to_tensor = args
+        Tuple of (augmented_images, labels) as lists
+    """
+    images_labels, n_augmentations, pil_aug, tensor_aug, to_tensor, normalize = args
     
     batch_images = []
     batch_labels = []
     
     for img, label in images_labels:
         for _ in range(n_augmentations):
-            # Apply spatial augmentations to PIL image
+            # Apply PIL augmentations
             aug_img = pil_aug(img)
             
             # Convert to tensor and normalize
             tensor_img = to_tensor(aug_img)
+            tensor_img = normalize(tensor_img)
             
-            # Apply post-tensor augmentations
+            # Apply tensor augmentations
             tensor_img = tensor_aug(tensor_img)
             
             batch_images.append(tensor_img)
             batch_labels.append(label)
     
     return batch_images, batch_labels
-
-
-def generate_preaugmented_dataset(
-    dataset: Dataset,
-    output_dir: str | Path,
-    n_augmentations: int = 5,
-    pil_augmentations: transforms.Compose | None = None,
-    tensor_augmentations: transforms.Compose | None = None,
-    normalize_mean: Tuple[float, float, float] = (0.5, 0.5, 0.5),
-    normalize_std: Tuple[float, float, float] = (0.5, 0.5, 0.5),
-    force_regenerate: bool = False,
-    num_workers: int = 8,
-) -> Path:
-    '''Generate pre-augmented dataset and save as tensor files for fast loading.
-    
-    This function creates multiple augmented copies of each image in the provided
-    dataset and saves them as PyTorch tensor files. This is much faster than 
-    on-the-fly augmentation during training because:
-    1. Augmentations are computed once, not every epoch
-    2. Data loads from pre-processed tensors, not raw images
-    3. No CPU-bound augmentation transforms during training
-    
-    IMPORTANT: To prevent data leakage, pass only the training subset after
-    performing train/val/test splits. Do NOT pass the full dataset.
-    
-    Args:
-        dataset: PyTorch Dataset or Subset containing PIL images (no transform applied).
-                 This should be the TRAINING subset only, after splitting.
-        output_dir: Directory to save augmented_images.pt, augmented_labels.pt, metadata.json
-        n_augmentations: Number of augmented copies per original image (default: 5)
-        pil_augmentations: Transforms to apply to PIL images before converting to tensor.
-                          Should include spatial transforms (flip, rotate, affine, etc.)
-                          If None, uses default augmentation pipeline.
-        tensor_augmentations: Transforms to apply after converting to tensor.
-                             Should include pixel-level transforms (blur, erasing, etc.)
-                             If None, uses default post-tensor augmentations.
-        normalize_mean: Mean values for normalization (default: (0.5, 0.5, 0.5))
-        normalize_std: Std values for normalization (default: (0.5, 0.5, 0.5))
-        force_regenerate: If True, regenerate even if output exists (default: False)
-        num_workers: Number of parallel workers for augmentation (default: 8)
-    
-    Returns:
-        Path to the output directory containing the generated files
-    
-    Example:
-        >>> from torchvision import datasets
-        >>> # Load raw dataset (no transform)
-        >>> raw_data = datasets.CIFAR10(root='data/', train=True, transform=None)
-        >>> # Split FIRST to prevent data leakage
-        >>> train_subset, val_subset, _ = prepare_splits(raw_data, test_data, val_size=10000)
-        >>> # Generate augmentations only from training subset
-        >>> generate_preaugmented_dataset(
-        ...     dataset=train_subset,
-        ...     output_dir='data/augmented_cifar10',
-        ...     n_augmentations=5,
-        ...     num_workers=8,
-        ... )
-        >>> # Load for training
-        >>> train_dataset = PreaugmentedDataset('data/augmented_cifar10')
-    '''
-    output_dir = Path(output_dir)
-    
-    # Check if already exists
-    if output_dir.exists() and (output_dir / 'augmented_images.pt').exists():
-        if not force_regenerate:
-            print(f'Pre-augmented data already exists at {output_dir}')
-            print('Use force_regenerate=True to regenerate')
-            return output_dir
-        else:
-            print(f'Removing existing data at {output_dir}')
-            shutil.rmtree(output_dir)
-    
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Default PIL augmentations (spatial transforms)
-    if pil_augmentations is None:
-        pil_augmentations = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(degrees=15),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
-            transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
-        ])
-    
-    # Default tensor augmentations (pixel-level transforms)
-    if tensor_augmentations is None:
-        tensor_augmentations = transforms.Compose([
-            transforms.RandomApply([transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0))], p=0.1),
-            transforms.RandomErasing(p=0.2, scale=(0.02, 0.1)),
-        ])
-    
-    # To-tensor transform with normalization
-    to_tensor_transform = transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize(normalize_mean, normalize_std),
-    ])
-    
-    print(f'Source dataset: {len(dataset)} images')
-    print(f'Generating {n_augmentations} augmented copies per image')
-    print(f'Total augmented images: {len(dataset) * n_augmentations}')
-    print(f'Using {num_workers} parallel workers')
-    
-    # Step 1: Extract all PIL images and labels (fast, just indexing)
-    print('\nExtracting images from dataset...')
-    images_labels = []
-    for idx in tqdm(range(len(dataset)), desc='Loading images'):
-        img, label = dataset[idx]
-        images_labels.append((img, label))
-    
-    # Step 2: Divide into chunks for parallel processing
-    chunk_size = max(1, len(images_labels) // num_workers)
-    chunks = []
-    for i in range(0, len(images_labels), chunk_size):
-        chunk = images_labels[i:i + chunk_size]
-        chunks.append((chunk, n_augmentations, pil_augmentations, 
-                       tensor_augmentations, to_tensor_transform))
-    
-    print(f'Split into {len(chunks)} chunks of ~{chunk_size} images each')
-    
-    # Step 3: Process chunks in parallel
-    print('\nGenerating augmented images (parallel)...')
-    all_images = []
-    all_labels = []
-    
-    with Pool(processes=num_workers) as pool:
-        results = list(tqdm(
-            pool.imap(_augment_image_batch, chunks),
-            total=len(chunks),
-            desc='Processing chunks'
-        ))
-    
-    # Step 4: Collect results
-    print('\nCollecting results...')
-    for batch_images, batch_labels in results:
-        all_images.extend(batch_images)
-        all_labels.extend(batch_labels)
-    
-    # Stack into single tensors
-    print('Stacking tensors...')
-    images_tensor = torch.stack(all_images)
-    labels_tensor = torch.tensor(all_labels, dtype=torch.long)
-    
-    print(f'Images tensor shape: {images_tensor.shape}')
-    print(f'Labels tensor shape: {labels_tensor.shape}')
-    print(f'Memory size: {images_tensor.element_size() * images_tensor.nelement() / 1024**3:.2f} GB')
-    
-    # Save to disk
-    print('\nSaving to disk...')
-    torch.save(images_tensor, output_dir / 'augmented_images.pt')
-    torch.save(labels_tensor, output_dir / 'augmented_labels.pt')
-    
-    # Save metadata
-    metadata = {
-        'n_augmentations': n_augmentations,
-        'original_size': len(dataset),
-        'augmented_size': len(all_images),
-        'image_shape': list(images_tensor.shape),
-        'normalize_mean': list(normalize_mean),
-        'normalize_std': list(normalize_std),
-        'num_workers': num_workers,
-    }
-    
-    with open(output_dir / 'metadata.json', 'w') as f:
-        json.dump(metadata, f, indent=2)
-    
-    file_size = (output_dir / 'augmented_images.pt').stat().st_size / 1024**3
-    print(f'\nDone! Saved to {output_dir}')
-    print(f'  - augmented_images.pt: {file_size:.2f} GB')
-    print(f'  - augmented_labels.pt')
-    print(f'  - metadata.json')
-    
-    return output_dir

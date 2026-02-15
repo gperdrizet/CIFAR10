@@ -1,13 +1,9 @@
 '''PyTorch utilities for image classification.'''
 
 from image_classification_tools.pytorch.data import (
-    load_dataset,
-    prepare_splits,
-    create_dataloaders,
-    generate_augmented_data,
-    generate_preaugmented_dataset,
-    PreaugmentedDataset,
-    AugmentedSubset
+    DataPipeline,
+    DataLoaders,
+    AugmentationStrategy
 )
 from image_classification_tools.pytorch.evaluation import evaluate_model
 from image_classification_tools.pytorch.training import train_model
@@ -28,13 +24,9 @@ from image_classification_tools.pytorch.hyperparameter_optimization import (
 
 __all__ = [
     # Data loading and preprocessing
-    'load_dataset',
-    'prepare_splits',
-    'create_dataloaders',
-    'generate_augmented_data',
-    'generate_preaugmented_dataset',
-    'PreaugmentedDataset',
-    'AugmentedSubset',
+    'DataPipeline',
+    'DataLoaders',
+    'AugmentationStrategy',
     # Model evaluation
     'evaluate_model',
     # Model training

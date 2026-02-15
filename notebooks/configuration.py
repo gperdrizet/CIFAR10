@@ -7,10 +7,12 @@ from pathlib import Path
 import numpy as np
 import optuna
 import torch
+from torchvision import transforms
 
 # Set random seeds for reproducibility
-torch.manual_seed(315)
-np.random.seed(315)
+SEED = 42
+torch.manual_seed(SEED)
+np.random.seed(SEED)
 
 # Device configuration
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -23,6 +25,7 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 MODELS_DIR = Path('../models/pytorch')
 RESULTS_DIR = Path('../data/pytorch/performance_results')
 DATA_DIR = Path('../data/pytorch/cifar10')
+AUGMENTED_DATA_DIR = Path('../data/pytorch/augmented_cifar10')
 OPTUNA_DB_PATH = Path('../data/pytorch/cnn_optimization.db')
 DOCS_DIR = Path('../docs')
 
@@ -40,3 +43,43 @@ CLASS_NAMES = [
     'airplane', 'automobile', 'bird', 'cat', 'deer',
     'dog', 'frog', 'horse', 'ship', 'truck'
 ]
+# ============================================================================
+# Data Pipeline Configuration
+# ============================================================================
+
+# Default hyperparameters for data loading
+VAL_SIZE = 10000
+BATCH_SIZE = 128
+
+# Transform presets for different use cases
+GRAYSCALE_TRANSFORM = transforms.Compose([
+    transforms.Grayscale(num_output_channels=1),
+    transforms.ToTensor(),
+    transforms.Normalize((0.5,), (0.5,)),
+])
+
+RGB_TRANSFORM = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+])
+
+# Augmentation transform presets
+PIL_AUGMENTATIONS = transforms.Compose([
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.RandomRotation(degrees=15),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+    transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
+])
+
+TENSOR_AUGMENTATIONS = transforms.Compose([
+    transforms.RandomApply([transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0))], p=0.1),
+    transforms.RandomErasing(p=0.2, scale=(0.02, 0.1)),
+])
+
+# RGB transforms for training (eval transform is same as RGB_TRANSFORM)
+RGB_TRAIN_TRANSFORM = RGB_TRANSFORM  # Augmentation handled separately via DataPipeline
+RGB_EVAL_TRANSFORM = RGB_TRANSFORM
+
+# Cache key for pregenerated augmentation
+AUGMENTATION_CACHE_KEY = 'cifar10_standard_aug_v1'

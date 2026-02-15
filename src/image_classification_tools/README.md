@@ -6,7 +6,7 @@ A lightweight PyTorch toolkit for building and training image classification mod
 
 This package provides utilities for common image classification tasks:
 
-- **Data loading**: Flexible data loaders for torchvision datasets and custom image folders
+- **Data loading**: Unified ``DataPipeline`` for automatic data preparation with intelligent splitting
 - **Model training**: Training loops with progress tracking and validation
 - **Evaluation**: Accuracy metrics, confusion matrices, and performance analysis
 - **Visualization**: Learning curves, probability distributions, and evaluation plots
@@ -24,11 +24,8 @@ pip install image-classification-tools
 
 ```python
 import torch
-from pathlib import Path
 from torchvision import datasets, transforms
-from image_classification_tools.pytorch.data import (
-    load_datasets, prepare_splits, create_dataloaders
-)
+from image_classification_tools.pytorch import DataPipeline
 from image_classification_tools.pytorch.training import train_model
 from image_classification_tools.pytorch.evaluation import evaluate_model
 
@@ -38,30 +35,27 @@ transform = transforms.Compose([
     transforms.Normalize((0.5,), (0.5,))
 ])
 
-# Load datasets
-train_dataset, test_dataset = load_datasets(
+# Create data pipeline (handles everything in one call)
+loaders = DataPipeline(
     data_source=datasets.MNIST,
+    split='train/val/test',
     train_transform=transform,
     eval_transform=transform,
-    download=True,
-    root=Path('./data/mnist')
-)
-
-# Prepare splits
-train_dataset, val_dataset, test_dataset = prepare_splits(
-    train_dataset=train_dataset,
-    test_dataset=test_dataset,
-    train_val_split=0.8
-)
-
-# Create dataloaders
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-train_loader, val_loader, test_loader = create_dataloaders(
-    train_dataset, val_dataset, test_dataset,
+    preload='gpu',
     batch_size=64,
-    preload_to_memory=True,
-    device=device
-)
+    val_size=10000,
+    download=True,
+    root='./data/mnist'
+).get_loaders()
+
+# Access loaders via attributes
+train_loader = loaders.train
+val_loader = loaders.val
+test_loader = loaders.test
+
+# Display summary
+print(loaders.split_info())
+print(loaders.memory_estimate())
 
 # Define model, criterion, optimizer
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -76,7 +70,7 @@ model = torch.nn.Sequential(
 criterion = torch.nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-# Train with lazy loading (moves batches to device during training)
+# Train
 history = train_model(
     model=model,
     train_loader=train_loader,
@@ -84,13 +78,64 @@ history = train_model(
     criterion=criterion,
     optimizer=optimizer,
     device=device,
-    lazy_loading=True,  # Set False if data already on device
     epochs=10
 )
 
 # Evaluate
 accuracy, predictions, labels = evaluate_model(model, test_loader)
 print(f'Test accuracy: {accuracy:.2f}%')
+```
+
+### Data augmentation
+
+```python
+from image_classification_tools.pytorch import DataPipeline, AugmentationStrategy
+
+# Define augmentation transforms
+pil_augmentations = transforms.Compose([
+    transforms.RandomHorizontalFlip(p=0.5),
+    transforms.RandomRotation(15),
+    transforms.ColorJitter(brightness=0.2, contrast=0.2)
+])
+
+tensor_augmentations = transforms.Compose([
+    transforms.RandomErasing(p=0.2, scale=(0.02, 0.1))
+])
+
+# Base transform
+base_transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+])
+
+# Create pipeline with on-the-fly augmentation
+loaders = DataPipeline(
+    data_source=datasets.CIFAR10,
+    split='train/val/test',
+    train_transform=base_transform,
+    eval_transform=base_transform,
+    augmentation=AugmentationStrategy.ON_THE_FLY,
+    pil_augmentations=pil_augmentations,
+    tensor_augmentations=tensor_augmentations,
+    preload=None,  # Use lazy loading for on-the-fly augmentation
+    batch_size=128,
+    root='./data/cifar10'
+).get_loaders()
+
+# Or use pregenerated augmentation (faster training)
+loaders = DataPipeline(
+    data_source=datasets.CIFAR10,
+    split='train/val/test',
+    train_transform=base_transform,
+    eval_transform=base_transform,
+    augmentation=AugmentationStrategy.PREGENERATED,
+    pil_augmentations=pil_augmentations,
+    tensor_augmentations=tensor_augmentations,
+    preload='gpu',
+    cache_key='cifar10_aug_v1',  # Reuse cached data
+    batch_size=128,
+    root='./data/cifar10'
+).get_loaders()
 ```
 
 ### Hyperparameter optimization
