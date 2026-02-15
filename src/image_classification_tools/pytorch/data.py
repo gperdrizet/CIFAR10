@@ -4,15 +4,18 @@ This module provides utilities for loading datasets (including CIFAR-10) and cre
 PyTorch DataLoaders with support for custom transforms and device preloading.
 '''
 
-# import os
+import json
 import shutil
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Callable
+from multiprocessing import Pool, cpu_count
+from functools import partial
 
 import torch
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 from torch.utils.data import DataLoader, Dataset, TensorDataset, Subset
+from tqdm import tqdm
 
 
 def load_dataset(
@@ -434,3 +437,296 @@ def generate_augmented_data(
     print(f'  Augmented images: {total_saved - original_size}')
     print(f'  Augmentation factor: {total_saved / original_size:.1f}x')
     print(f'  Location: {save_dir}')
+
+
+class PreaugmentedDataset(Dataset):
+    """Dataset class for loading pre-augmented images stored as tensor files.
+    
+    This class loads augmented images that were pre-computed and saved to disk
+    as PyTorch tensor files. This is faster than computing augmentations on-the-fly
+    during training.
+    
+    Args:
+        data_dir: Path to directory containing augmented_images.pt and augmented_labels.pt
+        transform: Optional additional transforms to apply (e.g., extra augmentations)
+        
+    Example:
+        >>> dataset = PreaugmentedDataset('data/pytorch/augmented_cifar10')
+        >>> loader = DataLoader(dataset, batch_size=64, shuffle=True)
+    """
+    
+    def __init__(self, data_dir: str | Path, transform: transforms.Compose | None = None):
+        self.data_dir = Path(data_dir)
+        self.transform = transform
+        
+        # Load tensors
+        images_path = self.data_dir / 'augmented_images.pt'
+        labels_path = self.data_dir / 'augmented_labels.pt'
+        
+        if not images_path.exists():
+            raise FileNotFoundError(f"Augmented images not found: {images_path}")
+        if not labels_path.exists():
+            raise FileNotFoundError(f"Augmented labels not found: {labels_path}")
+        
+        print(f"Loading pre-augmented dataset from {self.data_dir}...")
+        self.images = torch.load(images_path, weights_only=True)
+        self.labels = torch.load(labels_path, weights_only=True)
+        print(f"Loaded {len(self.images)} images")
+    
+    def __len__(self) -> int:
+        return len(self.images)
+    
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
+        image = self.images[idx]
+        label = self.labels[idx].item()
+        
+        if self.transform:
+            image = self.transform(image)
+        
+        return image, label
+
+
+class AugmentedSubset(Dataset):
+    """Wrapper that applies augmentation transforms to a Subset dataset.
+    
+    This class is useful when you want to apply augmentation only to the training
+    split after performing train/val/test splitting. The underlying dataset should
+    use a basic transform (ToTensor + Normalize), and this wrapper adds augmentation
+    on top.
+    
+    Args:
+        subset: A Subset dataset (from prepare_splits)
+        augmentation: Transforms to apply for augmentation. These should be
+                     tensor transforms (applied after ToTensor/Normalize).
+    
+    Example:
+        >>> # Load with basic transform
+        >>> dataset = load_dataset(datasets.CIFAR10, eval_transform, root='data/')
+        >>> train_subset, val_subset, test_subset = prepare_splits(dataset, test_ds)
+        >>> 
+        >>> # Apply augmentation only to training
+        >>> augment = transforms.Compose([
+        ...     transforms.RandomHorizontalFlip(),
+        ...     transforms.RandomErasing(p=0.2)
+        ... ])
+        >>> train_augmented = AugmentedSubset(train_subset, augment)
+    """
+    
+    def __init__(self, subset: Subset, augmentation: transforms.Compose):
+        self.subset = subset
+        self.augmentation = augmentation
+    
+    def __len__(self) -> int:
+        return len(self.subset)
+    
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
+        image, label = self.subset[idx]
+        
+        if self.augmentation:
+            image = self.augmentation(image)
+        
+        return image, label
+
+
+def _augment_image_batch(args):
+    '''Worker function to augment a batch of images in parallel.
+    
+    Args:
+        args: Tuple of (images_labels, n_augmentations, pil_aug, tensor_aug, to_tensor)
+              where images_labels is list of (PIL_image, label) tuples
+    
+    Returns:
+        Tuple of (augmented_images, labels) as lists of tensors
+    '''
+    images_labels, n_augmentations, pil_aug, tensor_aug, to_tensor = args
+    
+    batch_images = []
+    batch_labels = []
+    
+    for img, label in images_labels:
+        for _ in range(n_augmentations):
+            # Apply spatial augmentations to PIL image
+            aug_img = pil_aug(img)
+            
+            # Convert to tensor and normalize
+            tensor_img = to_tensor(aug_img)
+            
+            # Apply post-tensor augmentations
+            tensor_img = tensor_aug(tensor_img)
+            
+            batch_images.append(tensor_img)
+            batch_labels.append(label)
+    
+    return batch_images, batch_labels
+
+
+def generate_preaugmented_dataset(
+    dataset: Dataset,
+    output_dir: str | Path,
+    n_augmentations: int = 5,
+    pil_augmentations: transforms.Compose | None = None,
+    tensor_augmentations: transforms.Compose | None = None,
+    normalize_mean: Tuple[float, float, float] = (0.5, 0.5, 0.5),
+    normalize_std: Tuple[float, float, float] = (0.5, 0.5, 0.5),
+    force_regenerate: bool = False,
+    num_workers: int = 8,
+) -> Path:
+    '''Generate pre-augmented dataset and save as tensor files for fast loading.
+    
+    This function creates multiple augmented copies of each image in the provided
+    dataset and saves them as PyTorch tensor files. This is much faster than 
+    on-the-fly augmentation during training because:
+    1. Augmentations are computed once, not every epoch
+    2. Data loads from pre-processed tensors, not raw images
+    3. No CPU-bound augmentation transforms during training
+    
+    IMPORTANT: To prevent data leakage, pass only the training subset after
+    performing train/val/test splits. Do NOT pass the full dataset.
+    
+    Args:
+        dataset: PyTorch Dataset or Subset containing PIL images (no transform applied).
+                 This should be the TRAINING subset only, after splitting.
+        output_dir: Directory to save augmented_images.pt, augmented_labels.pt, metadata.json
+        n_augmentations: Number of augmented copies per original image (default: 5)
+        pil_augmentations: Transforms to apply to PIL images before converting to tensor.
+                          Should include spatial transforms (flip, rotate, affine, etc.)
+                          If None, uses default augmentation pipeline.
+        tensor_augmentations: Transforms to apply after converting to tensor.
+                             Should include pixel-level transforms (blur, erasing, etc.)
+                             If None, uses default post-tensor augmentations.
+        normalize_mean: Mean values for normalization (default: (0.5, 0.5, 0.5))
+        normalize_std: Std values for normalization (default: (0.5, 0.5, 0.5))
+        force_regenerate: If True, regenerate even if output exists (default: False)
+        num_workers: Number of parallel workers for augmentation (default: 8)
+    
+    Returns:
+        Path to the output directory containing the generated files
+    
+    Example:
+        >>> from torchvision import datasets
+        >>> # Load raw dataset (no transform)
+        >>> raw_data = datasets.CIFAR10(root='data/', train=True, transform=None)
+        >>> # Split FIRST to prevent data leakage
+        >>> train_subset, val_subset, _ = prepare_splits(raw_data, test_data, val_size=10000)
+        >>> # Generate augmentations only from training subset
+        >>> generate_preaugmented_dataset(
+        ...     dataset=train_subset,
+        ...     output_dir='data/augmented_cifar10',
+        ...     n_augmentations=5,
+        ...     num_workers=8,
+        ... )
+        >>> # Load for training
+        >>> train_dataset = PreaugmentedDataset('data/augmented_cifar10')
+    '''
+    output_dir = Path(output_dir)
+    
+    # Check if already exists
+    if output_dir.exists() and (output_dir / 'augmented_images.pt').exists():
+        if not force_regenerate:
+            print(f'Pre-augmented data already exists at {output_dir}')
+            print('Use force_regenerate=True to regenerate')
+            return output_dir
+        else:
+            print(f'Removing existing data at {output_dir}')
+            shutil.rmtree(output_dir)
+    
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Default PIL augmentations (spatial transforms)
+    if pil_augmentations is None:
+        pil_augmentations = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomRotation(degrees=15),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+            transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
+        ])
+    
+    # Default tensor augmentations (pixel-level transforms)
+    if tensor_augmentations is None:
+        tensor_augmentations = transforms.Compose([
+            transforms.RandomApply([transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 1.0))], p=0.1),
+            transforms.RandomErasing(p=0.2, scale=(0.02, 0.1)),
+        ])
+    
+    # To-tensor transform with normalization
+    to_tensor_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(normalize_mean, normalize_std),
+    ])
+    
+    print(f'Source dataset: {len(dataset)} images')
+    print(f'Generating {n_augmentations} augmented copies per image')
+    print(f'Total augmented images: {len(dataset) * n_augmentations}')
+    print(f'Using {num_workers} parallel workers')
+    
+    # Step 1: Extract all PIL images and labels (fast, just indexing)
+    print('\nExtracting images from dataset...')
+    images_labels = []
+    for idx in tqdm(range(len(dataset)), desc='Loading images'):
+        img, label = dataset[idx]
+        images_labels.append((img, label))
+    
+    # Step 2: Divide into chunks for parallel processing
+    chunk_size = max(1, len(images_labels) // num_workers)
+    chunks = []
+    for i in range(0, len(images_labels), chunk_size):
+        chunk = images_labels[i:i + chunk_size]
+        chunks.append((chunk, n_augmentations, pil_augmentations, 
+                       tensor_augmentations, to_tensor_transform))
+    
+    print(f'Split into {len(chunks)} chunks of ~{chunk_size} images each')
+    
+    # Step 3: Process chunks in parallel
+    print('\nGenerating augmented images (parallel)...')
+    all_images = []
+    all_labels = []
+    
+    with Pool(processes=num_workers) as pool:
+        results = list(tqdm(
+            pool.imap(_augment_image_batch, chunks),
+            total=len(chunks),
+            desc='Processing chunks'
+        ))
+    
+    # Step 4: Collect results
+    print('\nCollecting results...')
+    for batch_images, batch_labels in results:
+        all_images.extend(batch_images)
+        all_labels.extend(batch_labels)
+    
+    # Stack into single tensors
+    print('Stacking tensors...')
+    images_tensor = torch.stack(all_images)
+    labels_tensor = torch.tensor(all_labels, dtype=torch.long)
+    
+    print(f'Images tensor shape: {images_tensor.shape}')
+    print(f'Labels tensor shape: {labels_tensor.shape}')
+    print(f'Memory size: {images_tensor.element_size() * images_tensor.nelement() / 1024**3:.2f} GB')
+    
+    # Save to disk
+    print('\nSaving to disk...')
+    torch.save(images_tensor, output_dir / 'augmented_images.pt')
+    torch.save(labels_tensor, output_dir / 'augmented_labels.pt')
+    
+    # Save metadata
+    metadata = {
+        'n_augmentations': n_augmentations,
+        'original_size': len(dataset),
+        'augmented_size': len(all_images),
+        'image_shape': list(images_tensor.shape),
+        'normalize_mean': list(normalize_mean),
+        'normalize_std': list(normalize_std),
+        'num_workers': num_workers,
+    }
+    
+    with open(output_dir / 'metadata.json', 'w') as f:
+        json.dump(metadata, f, indent=2)
+    
+    file_size = (output_dir / 'augmented_images.pt').stat().st_size / 1024**3
+    print(f'\nDone! Saved to {output_dir}')
+    print(f'  - augmented_images.pt: {file_size:.2f} GB')
+    print(f'  - augmented_labels.pt')
+    print(f'  - metadata.json')
+    
+    return output_dir

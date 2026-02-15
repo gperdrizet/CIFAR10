@@ -4,7 +4,10 @@ from image_classification_tools.pytorch.data import (
     load_dataset,
     prepare_splits,
     create_dataloaders,
-    generate_augmented_data
+    generate_augmented_data,
+    generate_preaugmented_dataset,
+    PreaugmentedDataset,
+    AugmentedSubset
 )
 from image_classification_tools.pytorch.evaluation import evaluate_model
 from image_classification_tools.pytorch.training import train_model
@@ -29,6 +32,9 @@ __all__ = [
     'prepare_splits',
     'create_dataloaders',
     'generate_augmented_data',
+    'generate_preaugmented_dataset',
+    'PreaugmentedDataset',
+    'AugmentedSubset',
     # Model evaluation
     'evaluate_model',
     # Model training

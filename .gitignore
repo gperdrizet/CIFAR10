@@ -19,6 +19,10 @@ docs/build/
 docs/source/_autosummary/
 .doctrees/
 
+# Temporary notebooks (parallel GPU training copies)
+notebooks/*_tmpA.ipynb
+notebooks/*_tmpB.ipynb
+
 # IDEs
 .vscode/
 .idea/
