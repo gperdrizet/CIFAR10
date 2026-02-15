@@ -37,12 +37,11 @@ numpy = ">=1.24"
 optional = true
 
 [tool.poetry.group.docs.dependencies]
-sphinx = ">=7.0"
-sphinx-rtd-theme = ">=2.0"
+sphinx = ">=8.0"
+sphinx-rtd-theme = ">=3.0"
 nbsphinx = ">=0.9"
-sphinx-autodoc-typehints = ">=1.25"
+sphinx-autodoc-typehints = ">=3.0"
 ipykernel = ">=6.0"
-pandoc = ">=2.0"
 
 [tool.poetry.extras]
 tensorflow = ["tensorflow"]
