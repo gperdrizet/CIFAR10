@@ -8,7 +8,7 @@ Basic workflow
 
 The typical workflow is:
 
-1. Load and prepare your data
+1. Prepare your data with ``DataPipeline``
 2. Define your model architecture
 3. Train the model
 4. Evaluate performance
@@ -18,17 +18,14 @@ Example: MNIST classification
 
 This example shows the complete workflow using the MNIST dataset.
 
-1. Load data
-^^^^^^^^^^^^
+1. Prepare data
+^^^^^^^^^^^^^^^
 
 .. code-block:: python
 
-   from pathlib import Path
    import torch
    from torchvision import datasets, transforms
-   from image_classification_tools.pytorch.data import (
-       load_dataset, prepare_splits, create_dataloaders
-   )
+   from image_classification_tools.pytorch import DataPipeline
 
    # Define preprocessing
    transform = transforms.Compose([
@@ -36,38 +33,26 @@ This example shows the complete workflow using the MNIST dataset.
        transforms.Normalize((0.5,), (0.5,))
    ])
 
-   # Step 1: Load datasets
-   train_dataset = load_dataset(
+   # Create data pipeline
+   loaders = DataPipeline(
        data_source=datasets.MNIST,
-       transform=transform,
-       train=True,
-       download=True,
-       root=Path('./data/mnist')
-   )
-   
-   test_dataset = load_dataset(
-       data_source=datasets.MNIST,
-       transform=transform,
-       train=False,
-       download=True,
-       root=Path('./data/mnist')
-   )
-
-   # Step 2: Prepare splits
-   train_dataset, val_dataset, test_dataset = prepare_splits(
-       train_dataset=train_dataset,
-       test_dataset=test_dataset,
-       val_size=10000
-   )
-
-   # Step 3: Create dataloaders
-   device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-   train_loader, val_loader, test_loader = create_dataloaders(
-       train_dataset, val_dataset, test_dataset,
+       split='train/val/test',
+       train_transform=transform,
+       eval_transform=transform,
+       preload='gpu',
        batch_size=128,
-       preload_to_memory=True,
-       device=device
-   )
+       val_size=10000,
+       download=True,
+       root='./data/mnist'
+   ).get_loaders()
+
+   # Access loaders
+   train_loader = loaders.train
+   val_loader = loaders.val
+   test_loader = loaders.test
+   
+   # Display summary
+   print(loaders.split_info())
 
 2. Define model
 ^^^^^^^^^^^^^^^
@@ -108,7 +93,6 @@ This example shows the complete workflow using the MNIST dataset.
        criterion=criterion,
        optimizer=optimizer,
        device=device,
-       lazy_loading=False,  # Set to False when using preload_to_memory=True
        epochs=20,
        print_every=5
    )
@@ -149,8 +133,8 @@ For datasets in ImageFolder format:
 
 .. code-block:: python
 
-   from pathlib import Path
    from torchvision.datasets import ImageFolder
+   from image_classification_tools.pytorch import DataPipeline
 
    # Define transform
    transform = transforms.Compose([
@@ -160,28 +144,18 @@ For datasets in ImageFolder format:
                           std=[0.229, 0.224, 0.225])
    ])
 
-   # Load datasets from directory structure
-   train_dataset, test_dataset = load_datasets(
-       data_source=Path('./my_dataset'),
+   # Create pipeline (auto-detects ImageFolder structure)
+   loaders = DataPipeline(
+       data_source=ImageFolder,
+       split='train/val/test',
        train_transform=transform,
-       eval_transform=transform
-   )
-
-   # If no test directory exists, use 3-way split
-   train_dataset, val_dataset, test_dataset = prepare_splits(
-       train_dataset=train_dataset,
-       test_dataset=test_dataset,  # Will be None if no test/ directory
-       train_val_split=0.8,
-       test_split=0.1  # Only used if test_dataset is None
-   )
-
-   # Create dataloaders
-   train_loader, val_loader, test_loader = create_dataloaders(
-       train_dataset, val_dataset, test_dataset,
+       eval_transform=transform,
+       preload='cpu',  # Use CPU preload for large datasets
        batch_size=64,
-       preload_to_memory=False,  # Lazy loading for large datasets
-       num_workers=4
-   )
+       val_size=5000,
+       test_size=5000,
+       root='./my_dataset/train'
+   ).get_loaders()
 
 Your directory structure should be:
 
@@ -195,7 +169,7 @@ Your directory structure should be:
    │   └── class2/
    │       ├── img1.jpg
    │       └── img2.jpg
-   └── test/
+   └── test/          (optional - will be created via split if not present)
        ├── class1/
        └── class2/
 
@@ -225,46 +199,69 @@ For color images (3 channels), change the first layer to ``nn.Conv2d(3, 32, ...)
 Data augmentation
 -----------------
 
-Improve generalization with data augmentation:
+Improve generalization with data augmentation. The pipeline supports two strategies:
+
+**On-the-fly augmentation** (different each epoch):
 
 .. code-block:: python
 
-   # Training transform with augmentation
-   train_transform = transforms.Compose([
-       transforms.RandomHorizontalFlip(),
+   from image_classification_tools.pytorch import DataPipeline, AugmentationStrategy
+
+   # Define augmentation transforms (applied before base transform)
+   pil_augmentations = transforms.Compose([
+       transforms.RandomHorizontalFlip(p=0.5),
        transforms.RandomRotation(15),
-       transforms.ColorJitter(brightness=0.2, contrast=0.2),
+       transforms.ColorJitter(brightness=0.2, contrast=0.2)
+   ])
+   
+   tensor_augmentations = transforms.Compose([
+       transforms.RandomErasing(p=0.2, scale=(0.02, 0.1))
+   ])
+   
+   # Base transforms (no augmentation)
+   base_transform = transforms.Compose([
        transforms.ToTensor(),
        transforms.Normalize((0.5,), (0.5,))
    ])
    
-   # Evaluation transform (no augmentation)
-   eval_transform = transforms.Compose([
-       transforms.ToTensor(),
-       transforms.Normalize((0.5,), (0.5,))
-   ])
-   
-   # Load with separate transforms
-   train_dataset, test_dataset = load_datasets(
+   # Create pipeline with on-the-fly augmentation
+   loaders = DataPipeline(
        data_source=datasets.MNIST,
-       train_transform=train_transform,
-       eval_transform=eval_transform,
-       root=Path('./data/mnist')
-   )
-   
-   # Prepare splits
-   train_dataset, val_dataset, test_dataset = prepare_splits(
-       train_dataset, test_dataset, train_val_split=0.8
-   )
-   
-   # Create dataloaders with lazy loading (important for augmentation)
-   train_loader, val_loader, test_loader = create_dataloaders(
-       train_dataset, val_dataset, test_dataset,
+       split='train/val/test',
+       train_transform=base_transform,
+       eval_transform=base_transform,
+       augmentation=AugmentationStrategy.ON_THE_FLY,
+       pil_augmentations=pil_augmentations,
+       tensor_augmentations=tensor_augmentations,
+       preload=None,  # Must use lazy loading for on-the-fly augmentation
        batch_size=128,
-       preload_to_memory=False,  # Use lazy loading for on-the-fly augmentation
        num_workers=4,
-       pin_memory=True
-   )
+       pin_memory=True,
+       root='./data/mnist'
+   ).get_loaders()
+
+**Pregenerated augmentation** (fixed, faster training):
+
+.. code-block:: python
+
+   # Same augmentation transforms as above
+   
+   # Create pipeline with pregenerated augmentation
+   loaders = DataPipeline(
+       data_source=datasets.MNIST,
+       split='train/val/test',
+       train_transform=base_transform,
+       eval_transform=base_transform,
+       augmentation=AugmentationStrategy.PREGENERATED,
+       pil_augmentations=pil_augmentations,
+       tensor_augmentations=tensor_augmentations,
+       preload='gpu',  # Can preload since augmentation is fixed
+       batch_size=128,
+       cache_key='mnist_aug_v1',  # Reuse on subsequent runs
+       root='./data/mnist'
+   ).get_loaders()
+   
+   # Second run with same cache_key loads from cache (instant)
 
 Hyperparameter optimization
 ----------------------------

@@ -7,21 +7,18 @@ This directory contains the Sphinx documentation for the CIFAR-10 Tools package.
 ### Building locally
 
 ```bash
-# Install dependencies
-pip install sphinx sphinx-rtd-theme nbsphinx sphinx-autodoc-typehints ipykernel
+# Install documentation dependencies
+poetry install --with docs
 
-# Build and serve
-./serve.sh
+# Build HTML documentation
+cd docs
+sphinx-build -b html source build/html
+
+# Serve locally
+python3 -m http.server 8000 --directory build/html
 ```
 
 Then open http://localhost:8000 in your browser.
-
-### Manual build
-
-```bash
-# Build HTML documentation
-sphinx-build -b html source build/html
-```
 
 ## Structure
 
