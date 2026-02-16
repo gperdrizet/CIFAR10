@@ -13,9 +13,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets
 
-from image_classification_tools.pytorch.data import (
-    load_dataset, prepare_splits, create_dataloaders
-)
+from image_classification_tools.pytorch.data import DataPipeline
 
 
 class TrialFailedError(Exception):
@@ -311,36 +309,20 @@ def create_objective(
         else:
             weight_decay = 0.0
         
-        # Create data loaders with suggested batch size
-        # Load datasets
-        train_dataset = load_dataset(
+        # Create data pipeline with suggested batch size
+        loaders = DataPipeline(
             data_source=datasets.CIFAR10,
-            transform=transform,
-            train=True,
-            root=data_dir
-        )
-        
-        test_dataset = load_dataset(
-            data_source=datasets.CIFAR10,
-            transform=transform,
-            train=False,
-            root=data_dir
-        )
-        
-        # Prepare splits
-        train_dataset, val_dataset, _ = prepare_splits(
-            train_dataset=train_dataset,
-            test_dataset=test_dataset,
-            val_size=10000
-        )
-        
-        # Create dataloaders with memory preloading
-        train_loader, val_loader, _ = create_dataloaders(
-            train_dataset, val_dataset, val_dataset,
+            split='train/val/test',
+            train_transform=transform,
+            eval_transform=transform,
+            preload='gpu' if device is not None else None,
             batch_size=batch_size,
-            preload_to_memory=(device is not None),
-            device=device
-        )
+            val_size=10000,
+            root=data_dir
+        ).get_loaders()
+        
+        train_loader = loaders.train
+        val_loader = loaders.val
         
         # Wrap model creation and training in try/except to catch OOM errors
         try:
