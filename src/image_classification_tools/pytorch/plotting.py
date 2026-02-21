@@ -67,7 +67,7 @@ def plot_sample_images(
 
 def plot_learning_curves(
     history: dict[str, list[float]],
-    figsize: tuple[float, float] = (10, 4)
+    figsize: tuple[float, float] = (8, 3)
 ) -> tuple[plt.Figure, np.ndarray]:
     '''Plot training and validation loss and accuracy curves.
     
@@ -157,7 +157,7 @@ def plot_class_probability_distributions(
     class_names: list[str],
     nrows: int = 2,
     ncols: int = 5,
-    figsize: tuple[float, float] = (12, 4),
+    figsize: tuple[float, float] = (8, 3),
     bins: int = 50,
     color: str = 'black'
 ) -> tuple[plt.Figure, np.ndarray]:
@@ -184,6 +184,7 @@ def plot_class_probability_distributions(
     axes = axes.flatten()
 
     for i, (ax, class_name) in enumerate(zip(axes, class_names)):
+
         # Get probabilities for this class across all samples
         class_probs = all_probs[:, i]
         
@@ -191,6 +192,7 @@ def plot_class_probability_distributions(
         ax.hist(class_probs, bins=bins, color=color)
         ax.set_title(class_name)
         ax.set_xlim(0, 1)
+        ax.set_yscale('log')
 
     plt.tight_layout()
     
@@ -201,7 +203,7 @@ def plot_evaluation_curves(
     true_labels: np.ndarray,
     all_probs: np.ndarray,
     class_names: list[str],
-    figsize: tuple[float, float] = (12, 5)
+    figsize: tuple[float, float] = (8, 4)
 ) -> tuple[plt.Figure, tuple[plt.Axes, plt.Axes]]:
     '''Plot ROC and Precision-Recall curves for multi-class classification.
     
@@ -228,13 +230,13 @@ def plot_evaluation_curves(
 
     for i, class_name in enumerate(class_names):
         fpr, tpr, _ = roc_curve(y_test_bin[:, i], all_probs[:, i])
-        roc_auc = auc(fpr, tpr)
+        _ = auc(fpr, tpr)
         ax1.plot(fpr, tpr, label=class_name)
 
     ax1.plot([0, 1], [0, 1], 'k--', label='random classifier')
     ax1.set_xlabel('False positive rate')
     ax1.set_ylabel('True positive rate')
-    ax1.legend(loc='lower right', fontsize=12)
+    ax1.legend(loc='lower right')
     ax1.set_xlim([0, 1])
     ax1.set_ylim([0, 1.05])
 
@@ -262,7 +264,7 @@ def plot_evaluation_curves(
 
 def plot_optimization_results(
     study,
-    figsize: tuple[float, float] = (12, 4)
+    figsize: tuple[float, float] = (8, 3)
 ) -> tuple[plt.Figure, np.ndarray]:
     '''Plot Optuna optimization history and hyperparameter importance.
     

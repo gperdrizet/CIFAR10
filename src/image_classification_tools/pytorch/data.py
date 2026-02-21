@@ -735,14 +735,13 @@ class DataPipeline:
             print("Setting up on-the-fly augmentation...")
             train_split = self._apply_augmentation_on_the_fly(train_split)
         
-        # Preload if requested
+        # Preload if requested (skip test set to save VRAM)
         if self.preload is not None:
             if train_split is not None and 'train' in self.splits_needed:
                 train_split = self._preload_to_device(train_split, self.preload, "Preloading train")
             if val_split is not None:
                 val_split = self._preload_to_device(val_split, self.preload, "Preloading val")
-            if test_split is not None and 'test' in self.splits_needed:
-                test_split = self._preload_to_device(test_split, self.preload, "Preloading test")
+            # Test set is NOT preloaded to save VRAM for training/validation
         
         # Create DataLoaders
         num_workers = 0 if self.preload else self.num_workers
