@@ -405,7 +405,8 @@ class DataPipeline:
                 plan['val_size'] = 0
         
         return plan
-    
+
+  
     def _load_raw_dataset(self, train: bool) -> Dataset:
         """Load raw dataset from source.
         
@@ -458,7 +459,8 @@ class DataPipeline:
                     download=True,
                     transform=transform
                 )
-    
+
+
     def _create_splits(self, train_dataset: Dataset, test_dataset: Optional[Dataset] = None) -> Tuple[Dataset, Optional[Dataset], Optional[Dataset]]:
         """Create train/val/test splits according to plan.
         
@@ -522,7 +524,8 @@ class DataPipeline:
             return train_split, val_split, test_dataset
         
         return train_dataset, None, test_dataset
-    
+
+
     def _apply_augmentation_on_the_fly(self, dataset: Dataset) -> Dataset:
         """Wrap dataset to apply augmentation transforms on-the-fly.
         
@@ -559,7 +562,8 @@ class DataPipeline:
                 return image, label
         
         return AugmentedDataset(dataset, aug_transform)
-    
+
+
     def _generate_preaugmented_dataset(self, train_dataset: Dataset) -> Dataset:
         """Generate preaugmented dataset with parallel processing.
         
@@ -671,7 +675,8 @@ class DataPipeline:
             json.dump(metadata, f, indent=2)
         
         return TensorDataset(images_tensor, labels_tensor)
-    
+
+
     def _preload_to_device(self, dataset: Dataset, device_str: str, desc: str = "Preloading") -> TensorDataset:
         """Preload dataset to CPU or GPU memory.
         
@@ -698,7 +703,8 @@ class DataPipeline:
         labels_tensor = torch.tensor(labels).to(device)
         
         return TensorDataset(images_tensor, labels_tensor)
-    
+
+
     def get_loaders(self) -> DataLoaders:
         """Create and return DataLoaders based on configuration.
         
@@ -791,7 +797,8 @@ class DataPipeline:
             test_size=test_size,
             device=device_str
         )
-    
+
+
     @staticmethod
     def compute_dataset_stats(
         data_source: type,

@@ -307,7 +307,7 @@ Use Optuna to find optimal hyperparameters:
    print(f'Best accuracy: {study.best_value:.2f}%')
    print(f'Best params: {study.best_params}')
 
-Advanced: Building custom CNNs
+Advanced: building custom CNNs
 -------------------------------
 
 For more control, use the CNN builder:

@@ -2,13 +2,19 @@
 
 # Standard library imports
 from pathlib import Path
+import os
 
 # Third-party imports
 import numpy as np
 import optuna
 import torch
 from torchvision import transforms
-from huggingface_hub import HfApi, login
+from dotenv import load_dotenv
+
+# Load environment variables from .env if it exists
+env_path = Path(__file__).parent.parent / '.env'
+if env_path.exists():
+    load_dotenv(env_path)
 
 # Set random seeds for reproducibility
 SEED = 315
@@ -44,53 +50,6 @@ CLASS_NAMES = [
     'airplane', 'automobile', 'bird', 'cat', 'deer',
     'dog', 'frog', 'horse', 'ship', 'truck'
 ]
-
-# ============================================================================
-# Hugging Face Hub Configuration
-# ============================================================================
-
-# Hugging Face repository
-HF_REPO_ID = 'gperdrizet/cifar10-models'
-HF_REPO_TYPE = 'model'
-
-def upload_to_huggingface(
-    model_path: Path,
-    model_name: str,
-    commit_message: str = None,
-    repo_id: str = None
-) -> str:
-    '''Upload a model to Hugging Face Hub.
-    
-    Args:
-        model_path: Path to the model file to upload
-        model_name: Name for the model in the repository (e.g., 'dnn.pth')
-        commit_message: Optional commit message (defaults to model name)
-        repo_id: Optional repository ID (defaults to HF_REPO_ID)
-    
-    Returns:
-        URL of the uploaded file
-    '''
-    try:
-        api = HfApi()
-        repo_id = repo_id or HF_REPO_ID
-        commit_message = commit_message or f'Upload {model_name}'
-        
-        # Upload file to repository
-        url = api.upload_file(
-            path_or_fileobj=str(model_path),
-            path_in_repo=model_name,
-            repo_id=repo_id,
-            repo_type=HF_REPO_TYPE,
-            commit_message=commit_message
-        )
-        
-        print(f'✓ Model uploaded to Hugging Face: {url}')
-        return url
-        
-    except Exception as e:
-        print(f'✗ Failed to upload to Hugging Face: {e}')
-        print(f'  Make sure you are logged in: huggingface-cli login')
-        return None
 
 # ============================================================================
 # Data Pipeline Configuration

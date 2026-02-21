@@ -1,4 +1,4 @@
-Image Classification Tools Documentation
+Image classification tools documentation
 =========================================
 
 **image-classification-tools** is a lightweight PyTorch toolkit for building and training image classification models.

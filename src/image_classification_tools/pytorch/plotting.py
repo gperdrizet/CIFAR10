@@ -81,9 +81,13 @@ def plot_learning_curves(
     '''
     fig, axes = plt.subplots(1, 2, figsize=figsize)
 
+    # Find epoch with best validation loss
+    best_epoch = np.argmin(history['val_loss'])
+
     axes[0].set_title('Loss')
     axes[0].plot(history['train_loss'], label='Train')
     axes[0].plot(history['val_loss'], label='Validation')
+    axes[0].axvline(x=best_epoch, color='red', linestyle='--', linewidth=1.5, alpha=0.7, label='Best Model')
     axes[0].set_xlabel('Epoch')
     axes[0].set_ylabel('Loss (cross-entropy)')
     axes[0].legend(loc='best')
@@ -91,6 +95,7 @@ def plot_learning_curves(
     axes[1].set_title('Accuracy')
     axes[1].plot(history['train_accuracy'], label='Train')
     axes[1].plot(history['val_accuracy'], label='Validation')
+    axes[1].axvline(x=best_epoch, color='red', linestyle='--', linewidth=1.5, alpha=0.7, label='Best Model')
     axes[1].set_xlabel('Epoch')
     axes[1].set_ylabel('Accuracy (%)')
     axes[1].legend(loc='best')
