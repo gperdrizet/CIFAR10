@@ -2,8 +2,69 @@
 
 from pathlib import Path
 import os
+import pickle
 import torch
 from huggingface_hub import HfApi, hf_hub_download
+
+
+def load_history_from_source(
+    model_path: Path,
+    model_name: str,
+    model_source: str = 'local',
+    repo_id: str = None,
+    repo_type: str = 'model'
+) -> dict:
+    '''Load training history from local disk or Hugging Face Hub.
+    
+    Args:
+        model_path: Path to the local model file (history will be in same dir)
+        model_name: Name of the model file (e.g., 'dnn.pth')
+        model_source: 'local' to load from disk, 'huggingface' to download from Hub
+        repo_id: Optional repository ID (uses HF_REPO_ID env var if not provided)
+        repo_type: Type of repository (default: 'model')
+    
+    Returns:
+        Training history dictionary, or None if not found
+    '''
+    history_name = model_name.replace('.pth', '_history.pkl')
+    history_path = model_path.parent / history_name
+    
+    try:
+        if model_source == 'local':
+            if not history_path.exists():
+                return None
+            
+            with open(history_path, 'rb') as f:
+                history = pickle.load(f)
+            
+            print(f'Training history loaded from {history_path}')
+            return history
+        
+        elif model_source == 'huggingface':
+            repo_id = repo_id or os.getenv('HF_REPO_ID')
+            
+            if not repo_id:
+                return None
+            
+            # Download history from HuggingFace
+            downloaded_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=history_name,
+                repo_type=repo_type
+            )
+            
+            with open(downloaded_path, 'rb') as f:
+                history = pickle.load(f)
+            
+            print(f'Training history downloaded from Hugging Face')
+            return history
+        
+        else:
+            return None
+            
+    except Exception as e:
+        # History file doesn't exist or can't be loaded
+        return None
 
 
 def load_model_from_source(
@@ -163,7 +224,8 @@ def should_upload_to_huggingface() -> bool:
 def save_and_upload_model(
     model: torch.nn.Module,
     model_path: Path,
-    model_name: str
+    model_name: str,
+    history: dict = None
 ) -> None:
     '''Save a model locally and optionally upload to Hugging Face Hub.
     Automatically uploads if .env file exists with HF_TOKEN.
@@ -172,27 +234,44 @@ def save_and_upload_model(
         model: The PyTorch model to save
         model_path: Path where to save the model locally
         model_name: Name of the model file (e.g., 'dnn.pth')
+        history: Optional training history dictionary to save
     '''
     # Save model locally
     torch.save(model, model_path)
-
     print(f'Model saved to: {model_path}')
+    
+    # Save training history if provided
+    if history is not None:
+        history_name = model_name.replace('.pth', '_history.pkl')
+        history_path = model_path.parent / history_name
+        
+        with open(history_path, 'wb') as f:
+            pickle.dump(history, f)
+        
+        print(f'Training history saved to: {history_path}')
     
     # Check if we should upload to HuggingFace
     if should_upload_to_huggingface():
-
         print('\nUploading to Hugging Face Hub...')
 
         # Simple commit message indicating which model was updated
         base_name = model_name.replace('.pth', '')
         commit_msg = f'Updated {base_name}'
         
+        # Upload model
         upload_to_huggingface(
             model_path=model_path,
             model_name=model_name,
             commit_message=commit_msg
         )
-
+        
+        # Upload history if it exists
+        if history is not None:
+            upload_to_huggingface(
+                model_path=history_path,
+                model_name=history_name,
+                commit_message=commit_msg
+            )
     else:
         print('\nSkipping Hugging Face upload (no .env file with HF_TOKEN found)')
         print('To enable auto-upload:')
