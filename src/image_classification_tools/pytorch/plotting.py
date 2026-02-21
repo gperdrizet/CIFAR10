@@ -264,13 +264,16 @@ def plot_evaluation_curves(
 
 def plot_optimization_results(
     study,
-    figsize: tuple[float, float] = (8, 3)
+    figsize: tuple[float, float] = (8, 3),
+    ylim: tuple[float, float] | None = None
 ) -> tuple[plt.Figure, np.ndarray]:
     '''Plot Optuna optimization history and hyperparameter importance.
     
     Args:
         study: Optuna study object with completed trials.
         figsize: Figure size (width, height).
+        ylim: Optional y-axis limits for optimization history plot (min, max).
+              Use this to zoom in on trends when there are outlier trials.
         
     Returns:
         Tuple of (figure, axes array).
@@ -285,14 +288,25 @@ def plot_optimization_results(
     trial_numbers = [t.number for t in study.trials if t.value is not None]
     trial_values = [t.value for t in study.trials if t.value is not None]
 
-    axes[0].plot(trial_numbers, trial_values, 'ko-', alpha=0.6)
-    axes[0].axhline(
-        y=study.best_value,
-        color='r', linestyle='--', label=f'Best: {study.best_value:.2f}%'
-    )
+    # Plot individual trial results (markers only)
+    axes[0].plot(trial_numbers, trial_values, 'ko', markersize=4, label='Trial results')
+    
+    # Calculate and plot running best (cumulative maximum)
+    running_best = []
+    best_so_far = float('-inf')
+    for value in trial_values:
+        best_so_far = max(best_so_far, value)
+        running_best.append(best_so_far)
+    
+    axes[0].plot(trial_numbers, running_best, 'r-', linewidth=2, label=f'Best so far')
+    
     axes[0].set_xlabel('Trial')
     axes[0].set_ylabel('Validation Accuracy (%)')
     axes[0].legend()
+    
+    # Set y-axis limits if provided
+    if ylim is not None:
+        axes[0].set_ylim(ylim)
 
     # Hyperparameter importance (if enough trials completed)
     axes[1].set_title('Hyperparameter Importance')

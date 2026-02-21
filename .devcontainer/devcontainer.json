@@ -55,7 +55,8 @@
 		  "ms-toolsai.jupyter",                     // Jupyter notebook support for interactive data science
 		  "streetsidesoftware.code-spell-checker",  // Spell checking for code and documentation
 		  "ms-toolsai.tensorboard",                 // TensorBoard extension
-		  "optuna.optuna-dashboard"                 // Optuna dashboard extension
+		  "optuna.optuna-dashboard",                // Optuna dashboard extension
+		  "bierner.markdown-mermaid"                // Rendering for mermaid diagrams
 		]
 	  }
 	},

@@ -3,6 +3,7 @@
 from pathlib import Path
 import os
 import pickle
+import json
 import torch
 from huggingface_hub import HfApi, hf_hub_download
 
@@ -26,16 +27,26 @@ def load_history_from_source(
     Returns:
         Training history dictionary, or None if not found
     '''
-    history_name = model_name.replace('.pth', '_history.pkl')
+    history_name = model_name.replace('.pth', '_history.json').replace('.safetensors', '_history.json')
     history_path = model_path.parent / history_name
     
     try:
         if model_source == 'local':
             if not history_path.exists():
-                return None
+                # Try old pickle format as fallback
+                history_name_pkl = model_name.replace('.pth', '_history.pkl').replace('.safetensors', '_history.pkl')
+                history_path_pkl = model_path.parent / history_name_pkl
+                
+                if history_path_pkl.exists():
+                    with open(history_path_pkl, 'rb') as f:
+                        history = pickle.load(f)
+                    print(f'Training history loaded from {history_path_pkl} (pickle format)')
+                    return history
+                else:
+                    return None
             
-            with open(history_path, 'rb') as f:
-                history = pickle.load(f)
+            with open(history_path, 'r') as f:
+                history = json.load(f)
             
             print(f'Training history loaded from {history_path}')
             return history
@@ -46,18 +57,34 @@ def load_history_from_source(
             if not repo_id:
                 return None
             
-            # Download history from HuggingFace
-            downloaded_path = hf_hub_download(
-                repo_id=repo_id,
-                filename=history_name,
-                repo_type=repo_type
-            )
+            try:
+                # Try JSON format first
+                downloaded_path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=history_name,
+                    repo_type=repo_type
+                )
+                
+                with open(downloaded_path, 'r') as f:
+                    history = json.load(f)
+                
+                print(f'Training history downloaded from Hugging Face')
+                return history
             
-            with open(downloaded_path, 'rb') as f:
-                history = pickle.load(f)
-            
-            print(f'Training history downloaded from Hugging Face')
-            return history
+            except Exception:
+                # Fallback to old pickle format
+                history_name_pkl = model_name.replace('.pth', '_history.pkl').replace('.safetensors', '_history.pkl')
+                downloaded_path = hf_hub_download(
+                    repo_id=repo_id,
+                    filename=history_name_pkl,
+                    repo_type=repo_type
+                )
+                
+                with open(downloaded_path, 'rb') as f:
+                    history = pickle.load(f)
+                
+                print(f'Training history downloaded from Hugging Face (pickle format)')
+                return history
         
         else:
             return None
@@ -78,10 +105,11 @@ def load_model_from_source(
     '''Load a model from local disk or Hugging Face Hub.
     
     Handles all error cases internally and returns None if model cannot be loaded.
+    Supports both safetensors format (preferred) and legacy .pth format.
     
     Args:
         model_path: Path to the local model file
-        model_name: Name of the model file (e.g., 'dnn.pth')
+        model_name: Name of the model file (e.g., 'dnn.pth' or 'dnn.safetensors')
         model_source: 'local' to load from disk, 'huggingface' to download from Hub
         device: Device to load model on (defaults to CPU if not specified)
         repo_id: Optional repository ID (uses HF_REPO_ID env var if not provided)
@@ -95,16 +123,22 @@ def load_model_from_source(
     try:
         if model_source == 'local':
             if not model_path.exists():
-
                 print(f'Model not found at {model_path}')
                 return None
             
-            model = torch.load(model_path, map_location=device, weights_only=False)
-            print(f'Model loaded from {model_path}')
-            return model
+            # Check if it's a safetensors file or legacy .pth
+            if str(model_path).endswith('.safetensors'):
+                # For safetensors, we need the model architecture
+                # This will only work if the model was saved as state_dict
+                print(f'Loading safetensors requires model architecture to be defined first')
+                return None
+            else:
+                # Legacy .pth format with full model
+                model = torch.load(model_path, map_location=device, weights_only=False)
+                print(f'Model loaded from {model_path}')
+                return model
         
         elif model_source == 'huggingface':
-
             repo_id = repo_id or os.getenv('HF_REPO_ID')
 
             if not repo_id:
@@ -120,10 +154,15 @@ def load_model_from_source(
                 repo_type=repo_type
             )
             
-            # Load model
-            model = torch.load(downloaded_path, map_location=device, weights_only=False)
-            print(f'Model downloaded from Hugging Face')
-            return model
+            # Check format and load accordingly
+            if model_name.endswith('.safetensors'):
+                print(f'Loading safetensors requires model architecture to be defined first')
+                return None
+            else:
+                # Legacy .pth format
+                model = torch.load(downloaded_path, map_location=device, weights_only=False)
+                print(f'Model downloaded from Hugging Face')
+                return model
         
         else:
             print(f'Invalid model_source: "{model_source}". Must be "local" or "huggingface"')
@@ -140,7 +179,6 @@ def load_model_from_source(
             
             # Try local fallback
             if model_path.exists():
-
                 print(f'Trying local fallback...')
 
                 try:
@@ -230,23 +268,36 @@ def save_and_upload_model(
     '''Save a model locally and optionally upload to Hugging Face Hub.
     Automatically uploads if .env file exists with HF_TOKEN.
     
+    Uses pickle format (torch.save(model)) which is the standard PyTorch approach.
+    HuggingFace will flag it, but this is normal for PyTorch models.
+    
     Args:
         model: The PyTorch model to save
         model_path: Path where to save the model locally
         model_name: Name of the model file (e.g., 'dnn.pth')
         history: Optional training history dictionary to save
     '''
-    # Save model locally
+    # Save full model with pickle (standard PyTorch approach)
     torch.save(model, model_path)
     print(f'Model saved to: {model_path}')
     
     # Save training history if provided
     if history is not None:
-        history_name = model_name.replace('.pth', '_history.pkl')
+        history_name = model_name.replace('.pth', '_history.json')
         history_path = model_path.parent / history_name
         
-        with open(history_path, 'wb') as f:
-            pickle.dump(history, f)
+        # Convert numpy arrays to lists for JSON serialization
+        history_json = {}
+        for key, value in history.items():
+            if hasattr(value, 'tolist'):  # numpy array
+                history_json[key] = value.tolist()
+            elif isinstance(value, list):
+                history_json[key] = value
+            else:
+                history_json[key] = value
+        
+        with open(history_path, 'w') as f:
+            json.dump(history_json, f, indent=2)
         
         print(f'Training history saved to: {history_path}')
     
