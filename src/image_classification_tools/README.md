@@ -141,17 +141,24 @@ loaders = DataPipeline(
 ### Hyperparameter optimization
 
 ```python
-from image_classification_tools.pytorch.hyperparameter_optimization import create_objective
+import torch.nn as nn
+from image_classification_tools.pytorch.hyperparameter_optimization import (
+    create_objective, MockTrial, TrialFailedError
+)
 import optuna
+from torchvision import datasets
 
-# Define search space
+# Define your model factory
+def create_cnn(trial, num_classes, in_channels):
+    '''Model factory that samples architecture from trial.'''
+    n_blocks = trial.suggest_int('n_conv_blocks', 1, 3)
+    filters = trial.suggest_categorical('initial_filters', [16, 32, 64])
+    # Build your model here...
+    return model
+
+# Define search space for training hyperparameters
 search_space = {
     'batch_size': [32, 64, 128],
-    'n_conv_blocks': (1, 3),
-    'initial_filters': [16, 32, 64],
-    'n_fc_layers': (1, 3),
-    'conv_dropout_rate': (0.1, 0.5),
-    'fc_dropout_rate': (0.3, 0.7),
     'learning_rate': (1e-4, 1e-2, 'log'),
     'optimizer': ['Adam', 'SGD'],
     'weight_decay': (1e-6, 1e-3, 'log')
@@ -159,19 +166,26 @@ search_space = {
 
 # Create objective function
 objective = create_objective(
+    model_factory=create_cnn,
+    data_source=datasets.MNIST,
     data_dir='./data',
     train_transform=transform,
     eval_transform=transform,
     n_epochs=20,
-    device=device,
     num_classes=10,
     in_channels=1,
+    val_size=10000,
     search_space=search_space
 )
 
-# Run optimization
+# Run optimization with multi-GPU support
 study = optuna.create_study(direction='maximize')
-study.optimize(objective, n_trials=50)
+n_workers = torch.cuda.device_count() if torch.cuda.is_available() else 1
+study.optimize(objective, n_trials=50, n_jobs=n_workers, catch=(TrialFailedError,))
+
+# Recreate best model
+mock_trial = MockTrial(study.best_params)
+best_model = create_cnn(mock_trial, num_classes=10, in_channels=1)
 ```
 
 ## Requirements

@@ -266,23 +266,53 @@ Improve generalization with data augmentation. The pipeline supports two strateg
 Hyperparameter optimization
 ----------------------------
 
-Use Optuna to find optimal hyperparameters:
+Use Optuna to find optimal hyperparameters. You define your model factory function
+that samples architecture hyperparameters:
 
 .. code-block:: python
 
+   import torch.nn as nn
    import optuna
    from image_classification_tools.pytorch.hyperparameter_optimization import (
-       create_objective
+       create_objective, MockTrial, TrialFailedError
    )
+   from torchvision import datasets
 
-   # Define search space
+   # Define your model factory
+   def create_cnn(trial, num_classes, in_channels):
+       '''Model factory that samples architecture from trial.'''
+       
+       # Sample architecture hyperparameters
+       n_blocks = trial.suggest_int('n_conv_blocks', 1, 4)
+       filters = trial.suggest_categorical('initial_filters', [16, 32, 64])
+       dropout = trial.suggest_float('dropout_rate', 0.1, 0.5)
+       
+       # Build model
+       layers = []
+       current_channels = in_channels
+       
+       for i in range(n_blocks):
+           out_channels = filters * (2 ** i)
+           layers.extend([
+               nn.Conv2d(current_channels, out_channels, 3, padding=1),
+               nn.BatchNorm2d(out_channels),
+               nn.ReLU(),
+               nn.MaxPool2d(2),
+               nn.Dropout(dropout)
+           ])
+           current_channels = out_channels
+       
+       layers.extend([
+           nn.AdaptiveAvgPool2d((1, 1)),
+           nn.Flatten(),
+           nn.Linear(current_channels, num_classes)
+       ])
+       
+       return nn.Sequential(*layers)
+
+   # Define search space for training hyperparameters
    search_space = {
        'batch_size': [32, 64, 128, 256],
-       'n_conv_blocks': (1, 4),
-       'initial_filters': [16, 32, 64],
-       'n_fc_layers': (1, 3),
-       'conv_dropout_rate': (0.1, 0.5),
-       'fc_dropout_rate': (0.3, 0.7),
        'learning_rate': (1e-5, 1e-2, 'log'),
        'optimizer': ['Adam', 'SGD'],
        'weight_decay': (1e-6, 1e-3, 'log')
@@ -290,41 +320,40 @@ Use Optuna to find optimal hyperparameters:
 
    # Create objective function
    objective = create_objective(
-       data_dir=Path('./data'),
+       model_factory=create_cnn,
+       data_source=datasets.MNIST,
+       data_dir='./data',
        train_transform=transform,
        eval_transform=transform,
        n_epochs=20,
-       device=device,
        num_classes=10,
        in_channels=1,
-       search_space=search_space
+       val_size=10000,
+       search_space=search_space,
+       early_stopping_patience=5
    )
 
-   # Run optimization
-   study = optuna.create_study(direction='maximize')
-   study.optimize(objective, n_trials=100)
+   # Run optimization with multi-GPU support
+   study = optuna.create_study(
+       direction='maximize',
+       storage='sqlite:///optimization.db',
+       load_if_exists=True
+   )
+   
+   n_workers = torch.cuda.device_count() if torch.cuda.is_available() else 1
+   study.optimize(
+       objective, 
+       n_trials=100, 
+       n_jobs=n_workers,
+       catch=(TrialFailedError,)
+   )
 
    print(f'Best accuracy: {study.best_value:.2f}%')
    print(f'Best params: {study.best_params}')
-
-Advanced: building custom CNNs
--------------------------------
-
-For more control, use the CNN builder:
-
-.. code-block:: python
-
-   from image_classification_tools.pytorch.hyperparameter_optimization import create_cnn
-
-   model = create_cnn(
-       n_conv_blocks=3,
-       initial_filters=32,
-       n_fc_layers=2,
-       conv_dropout_rate=0.25,
-       fc_dropout_rate=0.5,
-       num_classes=10,
-       in_channels=3
-   ).to(device)
+   
+   # Recreate best model
+   mock_trial = MockTrial(study.best_params)
+   best_model = create_cnn(mock_trial, num_classes=10, in_channels=1)
 
 Next steps
 ----------

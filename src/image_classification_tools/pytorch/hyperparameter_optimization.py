@@ -165,7 +165,6 @@ def create_objective(
     num_classes: int,
     in_channels: int = 3,
     val_size: int = 10000,
-    test_size: int = None,
     search_space: dict = None,
     early_stopping_patience: int = None,
     min_delta: float = 0.0
@@ -182,12 +181,11 @@ def create_objective(
         data_source: Dataset class (e.g., datasets.CIFAR10, datasets.MNIST)
         data_dir: Directory containing training data
         train_transform: Transform to apply to training data
-        eval_transform: Transform to apply to validation/test data
+        eval_transform: Transform to apply to validation data
         n_epochs: Number of epochs per trial
         num_classes: Number of output classes (required, e.g., 10 for CIFAR-10)
         in_channels: Number of input channels (default: 3 for RGB images, 1 for grayscale)
         val_size: Number of validation samples (default: 10000)
-        test_size: Number of test samples (default: None for all remaining)
         search_space: Dictionary defining hyperparameter search space (default: None)
         early_stopping_patience: Number of epochs to wait before stopping if validation loss doesn't improve (None to disable, default: None)
         min_delta: Minimum change in validation loss to qualify as an improvement (default: 0.0)
@@ -225,7 +223,8 @@ def create_objective(
             n_gpus = torch.cuda.device_count()
             gpu_id = trial.number % n_gpus
             device = torch.device(f'cuda:{gpu_id}')
-            preload_device = 'gpu'
+            # Preload to the specific GPU assigned to this trial
+            preload_device = f'cuda:{gpu_id}'
         else:
             device = torch.device('cpu')
             preload_device = 'cpu'
@@ -257,13 +256,12 @@ def create_objective(
         # Create data pipeline with suggested batch size
         loaders = DataPipeline(
             data_source=data_source,
-            split='train/val/test',
+            split='train/val',
             train_transform=train_transform,
             eval_transform=eval_transform,
             preload=preload_device,
             batch_size=batch_size,
             val_size=val_size,
-            test_size=test_size,
             root=data_dir
         ).get_loaders()
         

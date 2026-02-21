@@ -28,8 +28,8 @@ Factory function that creates an Optuna objective for hyperparameter search with
 
 * Accepts a ``model_factory`` callable that creates models per trial
 * Automatically distributes trials across GPUs in round-robin fashion
-* Accepts configurable ``data_source``, ``val_size``, ``test_size`` for any dataset
-* Creates data loaders per trial with suggested batch size
+* Accepts configurable ``data_source``, ``val_size`` for any dataset
+* Creates data loaders per trial with suggested batch size (train/val only)
 * Raises ``TrialFailedError`` on dimension collapse or CUDA OOM
 * Supports early stopping within trials
 
@@ -42,6 +42,15 @@ Trains a model for a single Optuna trial with pruning and early stopping support
 * Supports optional early stopping on validation loss
 * Supports optional learning rate schedulers
 * Returns best validation accuracy achieved
+
+MockTrial
+~~~~~~~~~
+
+Utility class for recreating models with fixed hyperparameters after optimization completes.
+Provides the same ``suggest_int``, ``suggest_categorical``, and ``suggest_float`` methods
+as ``optuna.Trial``, but returns pre-defined values from a dictionary.
+
+Use this to recreate the best model from ``study.best_params`` without needing Optuna.
 
 TrialFailedError
 ~~~~~~~~~~~~~~~~
@@ -159,16 +168,7 @@ Recreate best model:
 
 .. code-block:: python
 
-   # Create a mock trial to extract best hyperparameters
-   class MockTrial:
-       def __init__(self, params):
-           self.params = params
-       def suggest_int(self, name, *args):
-           return self.params[name]
-       def suggest_categorical(self, name, *args):
-           return self.params[name]
-       def suggest_float(self, name, *args, **kwargs):
-           return self.params[name]
+   from image_classification_tools.pytorch.hyperparameter_optimization import MockTrial
 
    # Create model with best hyperparameters
    mock_trial = MockTrial(study.best_params)
@@ -180,6 +180,7 @@ Multi-GPU optimization
 The ``create_objective`` function automatically distributes trials across available GPUs:
 
 * Each trial gets assigned a GPU via ``device = torch.device(f'cuda:{trial.number % n_gpus}')``
+* Data is preloaded to the specific GPU assigned to each trial for optimal performance
 * Set ``n_jobs`` in ``study.optimize()`` to the number of GPUs you want to use
 * SQLite storage handles concurrent access (suitable for 2-4 parallel workers)
 * For >4 workers, consider PostgreSQL or MySQL for better concurrent write performance

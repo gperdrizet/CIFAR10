@@ -235,10 +235,11 @@ class DataPipeline:
             )
         
         # Validate preload
-        if self.preload is not None and self.preload not in ['gpu', 'cpu']:
-            raise ValueError(
-                f"preload must be 'gpu', 'cpu', or None, got: {self.preload}"
-            )
+        if self.preload is not None:
+            if self.preload not in ['gpu', 'cpu'] and not self.preload.startswith('cuda:'):
+                raise ValueError(
+                    f"preload must be 'gpu', 'cpu', 'cuda:N', or None, got: {self.preload}"
+                )
         
         # Check augmentation + preload compatibility
         if self.preload in ['gpu', 'cpu'] and self.augmentation == AugmentationStrategy.ON_THE_FLY:
@@ -682,15 +683,24 @@ class DataPipeline:
         
         Args:
             dataset: Dataset to preload
-            device_str: 'cpu' or 'gpu'
+            device_str: 'cpu', 'gpu', or 'cuda:N' (specific GPU)
             desc: Description for progress bar
         
         Returns:
             TensorDataset with data on device
         """
-        device = torch.device('cuda' if device_str == 'gpu' else 'cpu')
+        # Handle device string: 'cpu', 'gpu' (default cuda:0), or 'cuda:N'
+        if device_str == 'gpu':
+            device = torch.device('cuda:0')  # Default to GPU 0
+            device_display = 'GPU:0'
+        elif device_str.startswith('cuda:'):
+            device = torch.device(device_str)
+            device_display = device_str.upper()
+        else:
+            device = torch.device('cpu')
+            device_display = 'CPU'
         
-        print(f"{desc} to {device_str.upper()}...")
+        print(f"{desc} to {device_display}...")
         
         images = []
         labels = []
