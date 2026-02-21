@@ -21,6 +21,7 @@ from tqdm import tqdm
 
 class AugmentationStrategy(Enum):
     """Strategy for applying data augmentation."""
+
     NONE = 'none'
     ON_THE_FLY = 'on_the_fly'
     PREGENERATED = 'pregenerated'
@@ -40,6 +41,7 @@ class DataLoaders:
         test_size: Number of test samples
         device: Device where data is loaded ('cpu', 'cuda', or None for lazy)
     """
+
     train: Optional[DataLoader]
     val: Optional[DataLoader]
     test: Optional[DataLoader]
@@ -48,61 +50,56 @@ class DataLoaders:
     val_size: int
     test_size: int
     device: Optional[str]
-    
+
+
     def get_batch_sizes(self) -> Dict[str, int]:
         """Get batch sizes for each split.
         
         Returns:
             Dictionary with batch sizes for available splits
         """
+
         result = {}
+
         if self.train is not None:
             result['train'] = self.batch_size
         if self.val is not None:
             result['val'] = self.batch_size
         if self.test is not None:
             result['test'] = self.batch_size
+
         return result
-    
+
+
     def total_samples(self) -> Dict[str, int]:
         """Get total sample counts for each split.
         
         Returns:
             Dictionary with sample counts for available splits
         """
+
         result = {}
+
         if self.train is not None:
             result['train'] = self.train_size
         if self.val is not None:
             result['val'] = self.val_size
         if self.test is not None:
             result['test'] = self.test_size
+
         return result
+
     
-    def split_info(self) -> str:
-        """Get formatted string with split information.
-        
-        Returns:
-            Human-readable string like "Train: 40,000 | Val: 10,000 | Test: 10,000"
-        """
-        parts = []
-        if self.train is not None:
-            parts.append(f"Train: {self.train_size:,}")
-        if self.val is not None:
-            parts.append(f"Val: {self.val_size:,}")
-        if self.test is not None:
-            parts.append(f"Test: {self.test_size:,}")
-        return " | ".join(parts)
-    
-    def memory_estimate(self) -> str:
+    def memory_estimate(self) -> float:
         """Estimate memory usage for preloaded data.
         
         Returns:
-            Human-readable string like "Estimated memory: 2.3 GB"
-            Returns "N/A (lazy loading)" if data not preloaded
+            Estimated memory use in GB as float"
+            Returns None if data not preloaded
         """
+
         if self.device is None:
-            return "N/A (lazy loading)"
+            return None
         
         # Estimate: assume 32x32x3 RGB images with float32 (4 bytes per value)
         bytes_per_image = 32 * 32 * 3 * 4
@@ -110,7 +107,7 @@ class DataLoaders:
         total_bytes = total_samples * bytes_per_image
         total_gb = total_bytes / (1024 ** 3)
         
-        return f"Estimated memory: {total_gb:.2f} GB"
+        return total_gb
 
 
 class DataPipeline:
@@ -190,6 +187,7 @@ class DataPipeline:
         Raises:
             ValueError: If transforms are None, split format invalid, or incompatible config
         """
+
         self.data_source = data_source
         self.split_str = split
         self.root = Path(root) if root else None
@@ -220,14 +218,17 @@ class DataPipeline:
         
         # Plan operations
         self.split_plan = self._plan_split_operations()
-    
+
+
     def _validate_config(self):
         """Validate configuration and auto-correct incompatible settings with warnings."""
+
         # Check transforms are provided
         if self.train_transform is None:
             raise ValueError(
                 "train_transform is required. Please provide a transforms.Compose object."
             )
+
         if self.eval_transform is None:
             raise ValueError(
                 "eval_transform is required. Please provide a transforms.Compose object."
@@ -246,6 +247,7 @@ class DataPipeline:
                 "Auto-correcting to 'pregenerated' augmentation.",
                 UserWarning
             )
+
             self.augmentation = AugmentationStrategy.PREGENERATED
         
         # Check cache_key for pregenerated augmentation
@@ -262,7 +264,8 @@ class DataPipeline:
                 "Consider using preload='cpu' or 'gpu' for better performance.",
                 UserWarning
             )
-    
+
+
     def _parse_split(self, split_str: str) -> List[str]:
         """Parse and validate split string.
         
@@ -293,6 +296,7 @@ class DataPipeline:
         
         return split_str.split('/')
     
+
     def _detect_source_splits(self) -> str:
         """Detect if data source has pre-made splits.
         
@@ -300,6 +304,7 @@ class DataPipeline:
             'train+test' if source is PyTorch dataset with separate train/test
             'single' if source is directory or single dataset
         """
+
         if isinstance(self.data_source, (str, Path)):
             # Directory-based source
             return 'single'
@@ -307,20 +312,25 @@ class DataPipeline:
         # Check if it's a PyTorch dataset class with train parameter
         try:
             import inspect
+
             sig = inspect.signature(self.data_source.__init__)
+
             if 'train' in sig.parameters:
                 return 'train+test'
+
         except (AttributeError, TypeError):
             pass
         
         return 'single'
     
+
     def _plan_split_operations(self) -> Dict[str, Any]:
         """Plan minimal split operations to achieve desired outcome.
         
         Returns:
             Dictionary describing operations needed
         """
+
         plan = {
             'load_train': False,
             'load_test': False,
@@ -334,6 +344,7 @@ class DataPipeline:
         needs_test = 'test' in self.splits_needed
         
         if self.source_splits == 'train+test':
+
             # Source has separate train and test
             plan['load_train'] = True
             
@@ -351,9 +362,43 @@ class DataPipeline:
             if needs_val and needs_test:
                 # 3-way split
                 plan['split_train_into_all'] = True
+
             elif needs_val:
                 # 2-way split: train/val
                 plan['split_train_into_train_val'] = True
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
             elif needs_test:
                 # 2-way split: train/test
                 plan['split_train_into_all'] = True
