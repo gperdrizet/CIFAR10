@@ -1,4 +1,4 @@
-'''Project level global variables and configuration setting'''
+'''Project level global variables and configuration settings'''
 
 # Standard library imports
 from pathlib import Path
@@ -43,6 +43,7 @@ CLASS_NAMES = [
     'airplane', 'automobile', 'bird', 'cat', 'deer',
     'dog', 'frog', 'horse', 'ship', 'truck'
 ]
+
 # ============================================================================
 # Data Pipeline Configuration
 # ============================================================================
