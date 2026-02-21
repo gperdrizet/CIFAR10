@@ -10,9 +10,10 @@
 
 This repository demonstrates deep learning techniques for image classification using the CIFAR-10 benchmark dataset. Through a series of progressively more sophisticated models, it shows how different neural network architectures and training techniques improve classification performance.
 
-**Package**: The tools developed for this project are available as [`image-classification-tools`](https://pypi.org/project/image-classification-tools) on PyPI for use in your own projects.
-
-**Documentation**: [gperdrizet.github.io/CIFAR10](https://gperdrizet.github.io/CIFAR10)
+The tools developed for this project are available via PyPI for use in your own projects.
+- **PyPi package**: [`image-classification-tools`](https://pypi.org/project/image-classification-tools)
+- **Documentation**: [gperdrizet.github.io/CIFAR10](https://gperdrizet.github.io/CIFAR10)
+- **Models**: Pre-trained models are available on [HuggingFace](https://huggingface.co/YOUR_USERNAME/CIFAR10)
 
 ## About the dataset
 

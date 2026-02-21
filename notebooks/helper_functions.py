@@ -34,18 +34,20 @@ def load_model_from_source(
     try:
         if model_source == 'local':
             if not model_path.exists():
-                print(f'✗ Model not found at {model_path}')
+
+                print(f'Model not found at {model_path}')
                 return None
             
-            print(f'Loading model from local disk: {model_path}')
             model = torch.load(model_path, map_location=device, weights_only=False)
-            print(f'✓ Model loaded from {model_path}')
+            print(f'Model loaded from {model_path}')
             return model
         
         elif model_source == 'huggingface':
+
             repo_id = repo_id or os.getenv('HF_REPO_ID')
+
             if not repo_id:
-                print('✗ HF_REPO_ID not set in environment')
+                print('HF_REPO_ID not set in environment')
                 return None
             
             print(f'Downloading model from Hugging Face: {repo_id}/{model_name}')
@@ -59,35 +61,38 @@ def load_model_from_source(
             
             # Load model
             model = torch.load(downloaded_path, map_location=device, weights_only=False)
-            print(f'✓ Model downloaded and loaded from Hugging Face')
+            print(f'Model downloaded from Hugging Face')
             return model
         
         else:
-            print(f'✗ Invalid model_source: "{model_source}". Must be "local" or "huggingface"')
+            print(f'Invalid model_source: "{model_source}". Must be "local" or "huggingface"')
             return None
             
     except Exception as e:
         error_msg = str(e)
-        print(f'✗ Failed to load model: {error_msg}')
+        print(f'Failed to load model: {error_msg}')
         
         # Check if it's a "not found" error from HuggingFace
         if model_source == 'huggingface' and ('not found' in error_msg.lower() or '404' in error_msg):
-            print(f'  Model "{model_name}" does not exist in repository "{repo_id}"')
-            print(f'  This is expected if you haven\'t uploaded it yet.')
+            print(f'Model "{model_name}" does not exist in repository "{repo_id}"')
+            print(f'This is expected if you haven\'t uploaded it yet.')
             
             # Try local fallback
             if model_path.exists():
-                print(f'  Trying local fallback...')
+
+                print(f'Trying local fallback...')
+
                 try:
-                    print(f'  Loading model from local disk: {model_path}')
+                    print(f'Loading model from local disk: {model_path}')
                     model = torch.load(model_path, map_location=device, weights_only=False)
-                    print(f'✓ Model loaded from {model_path}')
+                    print(f'Model loaded from {model_path}')
                     return model
+
                 except Exception as fallback_error:
-                    print(f'✗ Local fallback also failed: {fallback_error}')
+                    print(f'Local fallback also failed: {fallback_error}')
                     return None
             else:
-                print(f'  No local copy found at {model_path}')
+                print(f'No local copy found at {model_path}')
                 return None
         
         # For other errors, just return None
@@ -116,6 +121,7 @@ def upload_to_huggingface(
     try:
         api = HfApi()
         repo_id = repo_id or os.getenv('HF_REPO_ID')
+
         if not repo_id:
             raise ValueError('HF_REPO_ID not set in environment')
             
@@ -130,17 +136,16 @@ def upload_to_huggingface(
             commit_message=commit_message
         )
         
-        print(f'✓ Model uploaded to Hugging Face: {url}')
+        print('Model uploaded to Hugging Face')
         return url
         
     except Exception as e:
-        print(f'✗ Failed to upload to Hugging Face: {e}')
+        print(f'Failed to upload to Hugging Face: {e}')
         return None
 
 
 def should_upload_to_huggingface() -> bool:
     '''Check if models should be automatically uploaded to Hugging Face Hub.
-    
     Checks for the existence of .env file and HF_TOKEN environment variable.
     
     Returns:
@@ -158,28 +163,26 @@ def should_upload_to_huggingface() -> bool:
 def save_and_upload_model(
     model: torch.nn.Module,
     model_path: Path,
-    model_name: str,
-    test_accuracy: float = None
+    model_name: str
 ) -> None:
     '''Save a model locally and optionally upload to Hugging Face Hub.
-    
     Automatically uploads if .env file exists with HF_TOKEN.
     
     Args:
         model: The PyTorch model to save
         model_path: Path where to save the model locally
         model_name: Name of the model file (e.g., 'dnn.pth')
-        test_accuracy: Optional test accuracy to display (not used in commit message)
     '''
     # Save model locally
     torch.save(model, model_path)
+
     print(f'Model saved to: {model_path}')
-    if test_accuracy is not None:
-        print(f'Test accuracy: {test_accuracy:.2f}%')
     
     # Check if we should upload to HuggingFace
     if should_upload_to_huggingface():
+
         print('\nUploading to Hugging Face Hub...')
+
         # Simple commit message indicating which model was updated
         base_name = model_name.replace('.pth', '')
         commit_msg = f'Updated {base_name}'
@@ -189,9 +192,10 @@ def save_and_upload_model(
             model_name=model_name,
             commit_message=commit_msg
         )
+
     else:
         print('\nSkipping Hugging Face upload (no .env file with HF_TOKEN found)')
         print('To enable auto-upload:')
         print('  1. Copy .env.template to .env')
         print('  2. Add your HF_TOKEN to .env')
-        print('  3. Run: huggingface-cli login')
+        print('  3. Set HF_REPO_ID in .env (e.g., username/repo_name)')
