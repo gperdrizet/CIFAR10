@@ -1,7 +1,7 @@
 '''Hyperparameter optimization utilities for CNN models using Optuna.
 
-This module provides functions for building configurable CNN architectures
-and running hyperparameter optimization with Optuna.
+This module provides functions for running hyperparameter optimization with Optuna.
+Model architecture definition should be done in the notebook/experiment code.
 '''
 
 from typing import Callable
@@ -11,7 +11,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torchvision import datasets
 
 from image_classification_tools.pytorch.data import DataPipeline
 
@@ -25,100 +24,37 @@ class TrialFailedError(Exception):
     pass
 
 
-def create_cnn(
-    n_conv_blocks: int,
-    initial_filters: int,
-    n_fc_layers: int,
-    conv_dropout_rate: float,
-    fc_dropout_rate: float,
-    num_classes: int,
-    in_channels: int = 3,
-    pool_frequency: int = 2,
-    filter_double_frequency: int = 2
-) -> nn.Sequential:
-    '''Create a CNN with configurable architecture.
+class MockTrial:
+    '''Mock Optuna trial that returns fixed hyperparameters.
     
-    This function builds a flexible CNN architecture with conv blocks that
-    progressively double filters at a configurable frequency.
-    Each conv block contains: 2 Conv layers + BatchNorm + ReLU + Conditional MaxPool + Dropout.
-    MaxPooling frequency is configurable to support deeper architectures without
-    spatial dimension collapse. For 32x32 inputs:
-      - pool_frequency=2: up to 10 blocks (5 pools)
-      - pool_frequency=3: up to 15 blocks (5 pools)
-      - pool_frequency=4: up to 20 blocks (5 pools)
-    Uses adaptive pooling before classifier to handle variable spatial dimensions.
+    Use this to recreate models with specific hyperparameters after optimization.
+    Instead of sampling new values, it returns pre-determined values from a dictionary.
     
-    Args:
-        n_conv_blocks: Number of convolutional blocks
-        initial_filters: Number of filters in first conv block
-        n_fc_layers: Number of fully connected layers before output (1-5)
-        conv_dropout_rate: Dropout probability after convolutional blocks
-        fc_dropout_rate: Dropout probability in fully connected layers
-        num_classes: Number of output classes (required)
-        in_channels: Number of input channels (default: 3 for RGB images)
-        pool_frequency: Apply MaxPool every N blocks (default: 2)
-        filter_double_frequency: Double filters every N blocks (default: 2, use 3-4 for ResNet-like growth)
-    
-    Returns:
-        nn.Sequential model
+    Example:
+        >>> best_params = study.best_trial.params
+        >>> mock_trial = MockTrial(best_params)
+        >>> model = create_model(mock_trial, num_classes=10, in_channels=3)
     '''
-
-    layers = []
-    current_channels = in_channels
-    spatial_size = 32  # CIFAR-10 input size
     
-    # Convolutional blocks
-    for block_idx in range(n_conv_blocks):
-        # Double filters every N blocks (configurable growth rate)
-        out_channels = initial_filters * (2 ** (block_idx // filter_double_frequency))
+    def __init__(self, params: dict):
+        '''Initialize with fixed parameter values.
         
-        # First conv in block
-        layers.append(nn.Conv2d(current_channels, out_channels, kernel_size=3, padding=1))
-        layers.append(nn.BatchNorm2d(out_channels))
-        layers.append(nn.ReLU())
-        
-        # Second conv in block
-        layers.append(nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1))
-        layers.append(nn.BatchNorm2d(out_channels))
-        layers.append(nn.ReLU())
-        
-        # Pool every N blocks, but only if spatial size allows (min 1x1 before adaptive pool)
-        should_pool = (block_idx + 1) % pool_frequency == 0
-        if should_pool and spatial_size > 1:
-            layers.append(nn.MaxPool2d(2, 2))
-            spatial_size //= 2
-        
-        layers.append(nn.Dropout(conv_dropout_rate))
-        
-        current_channels = out_channels
+        Args:
+            params: Dictionary of hyperparameter names and values
+        '''
+        self.params = params
     
-    # Classifier with adaptive pooling
-    layers.append(nn.AdaptiveAvgPool2d((1, 1)))
-    layers.append(nn.Flatten())
+    def suggest_int(self, name: str, *args, **kwargs) -> int:
+        '''Return the fixed integer parameter value.'''
+        return self.params[name]
     
-    # Generate FC layer sizes by halving from current_channels
-    fc_sizes = []
-    current_fc_size = current_channels // 2
-
-    for _ in range(n_fc_layers):
-
-        fc_sizes.append(max(32, current_fc_size))  # Minimum 32 units
-        current_fc_size //= 2
+    def suggest_categorical(self, name: str, *args, **kwargs):
+        '''Return the fixed categorical parameter value.'''
+        return self.params[name]
     
-    # Add FC layers
-    in_features = current_channels
-
-    for fc_size in fc_sizes:
-
-        layers.append(nn.Linear(in_features, fc_size))
-        layers.append(nn.ReLU())
-        layers.append(nn.Dropout(fc_dropout_rate))
-        in_features = fc_size
-    
-    # Output layer
-    layers.append(nn.Linear(in_features, num_classes))
-    
-    return nn.Sequential(*layers)
+    def suggest_float(self, name: str, *args, **kwargs) -> float:
+        '''Return the fixed float parameter value.'''
+        return self.params[name]
 
 
 def train_trial(
@@ -220,12 +156,16 @@ def train_trial(
 
 
 def create_objective(
+    model_factory: Callable[[optuna.Trial, int, int], nn.Module],
+    data_source,
     data_dir,
-    transform,
+    train_transform,
+    eval_transform,
     n_epochs: int,
-    device: torch.device,
     num_classes: int,
     in_channels: int = 3,
+    val_size: int = 10000,
+    test_size: int = None,
     search_space: dict = None,
     early_stopping_patience: int = None,
     min_delta: float = 0.0
@@ -234,14 +174,20 @@ def create_objective(
     
     This factory function creates a closure that captures the data loading parameters
     and training configuration, returning an objective function suitable for Optuna.
+    The objective function automatically selects GPUs in round-robin fashion when
+    multiple GPUs are available and n_jobs > 1.
     
     Args:
+        model_factory: Function that creates a model given (trial, num_classes, in_channels)
+        data_source: Dataset class (e.g., datasets.CIFAR10, datasets.MNIST)
         data_dir: Directory containing training data
-        transform: Transform to apply to both training and validation data
+        train_transform: Transform to apply to training data
+        eval_transform: Transform to apply to validation/test data
         n_epochs: Number of epochs per trial
-        device: Device to train on (cuda or cpu)
         num_classes: Number of output classes (required, e.g., 10 for CIFAR-10)
         in_channels: Number of input channels (default: 3 for RGB images, 1 for grayscale)
+        val_size: Number of validation samples (default: 10000)
+        test_size: Number of test samples (default: None for all remaining)
         search_space: Dictionary defining hyperparameter search space (default: None)
         early_stopping_patience: Number of epochs to wait before stopping if validation loss doesn't improve (None to disable, default: None)
         min_delta: Minimum change in validation loss to qualify as an improvement (default: 0.0)
@@ -250,16 +196,22 @@ def create_objective(
         Objective function for optuna.Study.optimize()
     
     Example:
+        >>> def my_model_factory(trial, num_classes, in_channels):
+        ...     n_blocks = trial.suggest_int('n_blocks', 3, 10)
+        ...     return create_cnn(n_blocks, num_classes, in_channels)
+        >>> 
         >>> objective = create_objective(
+        ...     model_factory=my_model_factory,
+        ...     data_source=datasets.CIFAR10,
         ...     data_dir='data/', 
-        ...     transform=transform,
+        ...     train_transform=transform,
+        ...     eval_transform=transform,
         ...     n_epochs=50, 
-        ...     device=device,
         ...     num_classes=10,
         ...     early_stopping_patience=5
         ... )
         >>> study = optuna.create_study(direction='maximize')
-        >>> study.optimize(objective, n_trials=100)
+        >>> study.optimize(objective, n_trials=100, n_jobs=4)
     '''
 
     if search_space == None:
@@ -268,25 +220,18 @@ def create_objective(
     def objective(trial: optuna.Trial) -> float:
         '''Optuna objective function for CNN hyperparameter optimization.'''
         
+        # Auto-select GPU device for this trial (round-robin across available GPUs)
+        if torch.cuda.is_available():
+            n_gpus = torch.cuda.device_count()
+            gpu_id = trial.number % n_gpus
+            device = torch.device(f'cuda:{gpu_id}')
+            preload_device = 'gpu'
+        else:
+            device = torch.device('cpu')
+            preload_device = 'cpu'
+        
         # Suggest hyperparameters from search space
         batch_size = trial.suggest_categorical('batch_size', search_space['batch_size'])
-        n_conv_blocks = trial.suggest_int('n_conv_blocks', *search_space['n_conv_blocks'])
-        initial_filters = trial.suggest_categorical('initial_filters', search_space['initial_filters'])
-        n_fc_layers = trial.suggest_int('n_fc_layers', *search_space['n_fc_layers'])
-        conv_dropout_rate = trial.suggest_float('conv_dropout_rate', *search_space['conv_dropout_rate'])
-        fc_dropout_rate = trial.suggest_float('fc_dropout_rate', *search_space['fc_dropout_rate'])
-        
-        # Pool frequency (optional, defaults to 2)
-        if 'pool_frequency' in search_space:
-            pool_frequency = trial.suggest_categorical('pool_frequency', search_space['pool_frequency'])
-        else:
-            pool_frequency = 2
-        
-        # Filter double frequency (optional, defaults to 2)
-        if 'filter_double_frequency' in search_space:
-            filter_double_frequency = trial.suggest_categorical('filter_double_frequency', search_space['filter_double_frequency'])
-        else:
-            filter_double_frequency = 2
         
         # Handle learning rate with optional log scale
         lr_params = search_space['learning_rate']
@@ -311,13 +256,14 @@ def create_objective(
         
         # Create data pipeline with suggested batch size
         loaders = DataPipeline(
-            data_source=datasets.CIFAR10,
+            data_source=data_source,
             split='train/val/test',
-            train_transform=transform,
-            eval_transform=transform,
-            preload='gpu' if device is not None else None,
+            train_transform=train_transform,
+            eval_transform=eval_transform,
+            preload=preload_device,
             batch_size=batch_size,
-            val_size=10000,
+            val_size=val_size,
+            test_size=test_size,
             root=data_dir
         ).get_loaders()
         
@@ -326,18 +272,8 @@ def create_objective(
         
         # Wrap model creation and training in try/except to catch OOM errors
         try:
-            # Create model with suggested architecture
-            model = create_cnn(
-                n_conv_blocks=n_conv_blocks,
-                initial_filters=initial_filters,
-                n_fc_layers=n_fc_layers,
-                conv_dropout_rate=conv_dropout_rate,
-                fc_dropout_rate=fc_dropout_rate,
-                num_classes=num_classes,
-                in_channels=in_channels,
-                pool_frequency=pool_frequency,
-                filter_double_frequency=filter_double_frequency
-            ).to(device)
+            # Create model using the provided model factory
+            model = model_factory(trial, num_classes, in_channels).to(device)
             
             # Define optimizer
             if optimizer_name == 'Adam':

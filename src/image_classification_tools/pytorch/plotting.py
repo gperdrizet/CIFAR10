@@ -177,9 +177,9 @@ def plot_class_probability_distributions(
     '''
     fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
 
-    fig.suptitle('Predicted probability distributions by class', fontsize=14, y=1.02)
-    fig.supxlabel('Predicted probability', fontsize=12)
-    fig.supylabel('Count', fontsize=12)
+    fig.suptitle('Predicted probability distributions by class')
+    fig.supxlabel('Predicted probability')
+    fig.supylabel('Count')
 
     axes = axes.flatten()
 
