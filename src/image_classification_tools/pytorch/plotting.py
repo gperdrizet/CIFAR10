@@ -87,7 +87,7 @@ def plot_learning_curves(
     axes[0].set_title('Loss')
     axes[0].plot(history['train_loss'], label='Train')
     axes[0].plot(history['val_loss'], label='Validation')
-    axes[0].axvline(x=best_epoch, color='red', linestyle='--', linewidth=1.5, alpha=0.7, label='Best Model')
+    axes[0].axvline(x=best_epoch, color='red', linestyle='--', linewidth=1.5, alpha=0.7, label='Best model')
     axes[0].set_xlabel('Epoch')
     axes[0].set_ylabel('Loss (cross-entropy)')
     axes[0].legend(loc='best')
@@ -95,7 +95,7 @@ def plot_learning_curves(
     axes[1].set_title('Accuracy')
     axes[1].plot(history['train_accuracy'], label='Train')
     axes[1].plot(history['val_accuracy'], label='Validation')
-    axes[1].axvline(x=best_epoch, color='red', linestyle='--', linewidth=1.5, alpha=0.7, label='Best Model')
+    axes[1].axvline(x=best_epoch, color='red', linestyle='--', linewidth=1.5, alpha=0.7, label='Best model')
     axes[1].set_xlabel('Epoch')
     axes[1].set_ylabel('Accuracy (%)')
     axes[1].legend(loc='best')
@@ -233,7 +233,7 @@ def plot_evaluation_curves(
         _ = auc(fpr, tpr)
         ax1.plot(fpr, tpr, label=class_name)
 
-    ax1.plot([0, 1], [0, 1], 'k--', label='random classifier')
+    ax1.plot([0, 1], [0, 1], 'k--', label='Random classifier')
     ax1.set_xlabel('False positive rate')
     ax1.set_ylabel('True positive rate')
     ax1.legend(loc='lower right')
@@ -283,7 +283,7 @@ def plot_optimization_results(
     fig, axes = plt.subplots(1, 2, figsize=figsize)
 
     # Optimization history
-    axes[0].set_title('Optimization History')
+    axes[0].set_title('Optimization history')
     
     trial_numbers = [t.number for t in study.trials if t.value is not None]
     trial_values = [t.value for t in study.trials if t.value is not None]
@@ -301,7 +301,7 @@ def plot_optimization_results(
     axes[0].plot(trial_numbers, running_best, 'r-', linewidth=2, label=f'Best so far')
     
     axes[0].set_xlabel('Trial')
-    axes[0].set_ylabel('Validation Accuracy (%)')
+    axes[0].set_ylabel('Validation accuracy (%)')
     axes[0].legend()
     
     # Set y-axis limits if provided
@@ -309,7 +309,7 @@ def plot_optimization_results(
         axes[0].set_ylim(ylim)
 
     # Hyperparameter importance (if enough trials completed)
-    axes[1].set_title('Hyperparameter Importance')
+    axes[1].set_title('Hyperparameter importance')
     completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
 
     if len(completed_trials) >= 5:

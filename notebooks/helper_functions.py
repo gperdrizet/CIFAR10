@@ -263,7 +263,9 @@ def save_and_upload_model(
     model: torch.nn.Module,
     model_path: Path,
     model_name: str,
-    history: dict = None
+    history: dict = None,
+    optuna_study_path: Path = None,
+    optuna_study_name: str = None
 ) -> None:
     '''Save a model locally and optionally upload to Hugging Face Hub.
     Automatically uploads if .env file exists with HF_TOKEN.
@@ -276,6 +278,8 @@ def save_and_upload_model(
         model_path: Path where to save the model locally
         model_name: Name of the model file (e.g., 'dnn.pth')
         history: Optional training history dictionary to save
+        optuna_study_path: Optional path to Optuna study database file
+        optuna_study_name: Optional name for Optuna study file in repo (e.g., 'cnn_optimization.db')
     '''
     # Save full model with pickle (standard PyTorch approach)
     torch.save(model, model_path)
@@ -323,6 +327,18 @@ def save_and_upload_model(
                 model_name=history_name,
                 commit_message=commit_msg
             )
+        
+        # Upload Optuna study database if provided
+        if optuna_study_path is not None and optuna_study_path.exists():
+            if optuna_study_name is None:
+                optuna_study_name = optuna_study_path.name
+            
+            upload_to_huggingface(
+                model_path=optuna_study_path,
+                model_name=optuna_study_name,
+                commit_message=commit_msg
+            )
+            print(f'Optuna study uploaded: {optuna_study_name}')
     else:
         print('\nSkipping Hugging Face upload (no .env file with HF_TOKEN found)')
         print('To enable auto-upload:')
