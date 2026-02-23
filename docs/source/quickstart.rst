@@ -36,14 +36,13 @@ This example shows the complete workflow using the MNIST dataset.
    # Create data pipeline
    loaders = DataPipeline(
        data_source=datasets.MNIST,
+       data_dir='./data/pytorch/mnist',
        split='train/val/test',
+       val_size=10000,
+       batch_size=128,
        train_transform=transform,
        eval_transform=transform,
-       preload='gpu',
-       batch_size=128,
-       val_size=10000,
-       download=True,
-       root='./data/mnist'
+       preload='gpu'
    ).get_loaders()
 
    # Access loaders
@@ -147,14 +146,14 @@ For datasets in ImageFolder format:
    # Create pipeline (auto-detects ImageFolder structure)
    loaders = DataPipeline(
        data_source=ImageFolder,
+       data_dir='./my_dataset/train',
        split='train/val/test',
-       train_transform=transform,
-       eval_transform=transform,
-       preload='cpu',  # Use CPU preload for large datasets
-       batch_size=64,
        val_size=5000,
        test_size=5000,
-       root='./my_dataset/train'
+       batch_size=64,
+       train_transform=transform,
+       eval_transform=transform,
+       preload='cpu'  # Use CPU preload for large datasets
    ).get_loaders()
 
 Your directory structure should be:
@@ -199,15 +198,13 @@ For color images (3 channels), change the first layer to ``nn.Conv2d(3, 32, ...)
 Data augmentation
 -----------------
 
-Improve generalization with data augmentation. The pipeline supports two strategies:
-
-**On-the-fly augmentation** (different each epoch):
+Improve generalization with data augmentation. Augmented data is pregenerated and saved to disk for reuse:
 
 .. code-block:: python
 
-   from image_classification_tools.pytorch import DataPipeline, AugmentationStrategy
+   from image_classification_tools.pytorch import DataPipeline
 
-   # Define augmentation transforms (applied before base transform)
+   # Define augmentation transforms
    pil_augmentations = transforms.Compose([
        transforms.RandomHorizontalFlip(p=0.5),
        transforms.RandomRotation(15),
@@ -218,50 +215,31 @@ Improve generalization with data augmentation. The pipeline supports two strateg
        transforms.RandomErasing(p=0.2, scale=(0.02, 0.1))
    ])
    
-   # Base transforms (no augmentation)
+   # Base transforms (applied to all data)
    base_transform = transforms.Compose([
        transforms.ToTensor(),
        transforms.Normalize((0.5,), (0.5,))
    ])
    
-   # Create pipeline with on-the-fly augmentation
+   # Create pipeline with augmentation
    loaders = DataPipeline(
        data_source=datasets.MNIST,
+       data_dir='./data/pytorch/mnist',
        split='train/val/test',
-       train_transform=base_transform,
-       eval_transform=base_transform,
-       augmentation=AugmentationStrategy.ON_THE_FLY,
-       pil_augmentations=pil_augmentations,
-       tensor_augmentations=tensor_augmentations,
-       preload=None,  # Must use lazy loading for on-the-fly augmentation
        batch_size=128,
        num_workers=4,
-       pin_memory=True,
-       root='./data/mnist'
-   ).get_loaders()
-
-**Pregenerated augmentation** (fixed, faster training):
-
-.. code-block:: python
-
-   # Same augmentation transforms as above
-   
-   # Create pipeline with pregenerated augmentation
-   loaders = DataPipeline(
-       data_source=datasets.MNIST,
-       split='train/val/test',
        train_transform=base_transform,
        eval_transform=base_transform,
-       augmentation=AugmentationStrategy.PREGENERATED,
+       preload='gpu',  # Preload augmented data to GPU
+       n_augmentations=5,  # Create 5 augmented copies per image
+       augmented_dataset_name='mnist_aug_v1',  # Optional: defaults to 'depth_5'
        pil_augmentations=pil_augmentations,
-       tensor_augmentations=tensor_augmentations,
-       preload='gpu',  # Can preload since augmentation is fixed
-       batch_size=128,
-       cache_key='mnist_aug_v1',  # Reuse on subsequent runs
-       root='./data/mnist'
+       tensor_augmentations=tensor_augmentations
    ).get_loaders()
    
-   # Second run with same cache_key loads from cache (instant)
+   # Augmented data saved to: ./data/pytorch/augmented_mnist/mnist_aug_v1/
+   # Subsequent runs with same augmented_dataset_name load from cache
+   # Use force_regenerate=True to regenerate if needed
 
 Hyperparameter optimization
 ----------------------------

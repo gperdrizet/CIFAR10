@@ -2,7 +2,7 @@
 
 # Standard library imports
 from pathlib import Path
-import os
+# import os
 
 # Third-party imports
 import numpy as np
@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env if it exists
 env_path = Path(__file__).parent.parent / '.env'
+
 if env_path.exists():
     load_dotenv(env_path)
 
@@ -31,6 +32,7 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 # Paths
 MODELS_DIR = Path('../models/pytorch')
 RESULTS_DIR = Path('../data/pytorch/performance_results')
+HISTORY_DIR = Path('../data/pytorch/performance_results')  # Directory for training history JSON files
 DATA_DIR = Path('../data/pytorch/cifar10')
 AUGMENTED_DATA_DIR = Path('../data/pytorch/augmented_cifar10')
 OPTUNA_DB_PATH = Path('../data/pytorch/cnn_optimization.db')
@@ -93,5 +95,37 @@ TENSOR_AUGMENTATIONS = transforms.Compose([
 RGB_TRAIN_TRANSFORM = RGB_TRANSFORM  # Augmentation handled separately via DataPipeline
 RGB_EVAL_TRANSFORM = RGB_TRANSFORM
 
-# Cache key for pregenerated augmentation
-AUGMENTATION_CACHE_KEY = 'cifar10_standard_aug_v1'
+# Augmented dataset name for caching
+AUGMENTED_DATASET_NAME = 'cifar10_standard_aug_v1'
+
+# ============================================================================
+# Model Filenames
+# ============================================================================
+
+
+# Model filenames for each notebook
+MODEL_DNN = '01-dnn.pth'
+MODEL_CNN = '02-cnn.pth'
+MODEL_RGB_CNN = '03-rgb_cnn.pth'
+MODEL_OPTIMIZED_CNN = '04-optimized_cnn.pth'
+MODEL_TRAINING_OPTIMIZED_CNN = '05-training_optimized_cnn.pth'
+MODEL_AUGMENTED_CNN = '06-augmented_cnn.pth'
+MODEL_RESNET50 = '07-resnet50.pth'
+
+# Training history filenames for each notebook (JSON format)
+HISTORY_DNN = '01-dnn_history.json'
+HISTORY_CNN = '02-cnn_history.json'
+HISTORY_RGB_CNN = '03-rgb_cnn_history.json'
+HISTORY_OPTIMIZED_CNN = '04-optimized_cnn_history.json'
+HISTORY_TRAINING_OPTIMIZED_CNN = '05-training_optimized_cnn_history.json'
+HISTORY_AUGMENTED_CNN = '06-augmented_cnn_history.json'
+HISTORY_RESNET50 = '07-resnet50_history.json'
+
+# Results filenames for each notebook
+RESULTS_DNN = '01-dnn_results.pkl'
+RESULTS_CNN = '02-cnn_results.pkl'
+RESULTS_RGB_CNN = '03-rgb_cnn_results.pkl'
+RESULTS_OPTIMIZED_CNN = '04-architecture_optimized_cnn_results.pkl'
+RESULTS_TRAINING_OPTIMIZED_CNN = '05-training_optimized_cnn_results.pkl'
+RESULTS_AUGMENTED_CNN = '06-augmented_cnn_results.pkl'
+RESULTS_RESNET50 = '07-resnet50_results.pkl'

@@ -256,13 +256,13 @@ def create_objective(
         # Create data pipeline with suggested batch size
         loaders = DataPipeline(
             data_source=data_source,
+            data_dir=data_dir,
             split='train/val',
+            val_size=val_size,
+            batch_size=batch_size,
             train_transform=train_transform,
             eval_transform=eval_transform,
-            preload=preload_device,
-            batch_size=batch_size,
-            val_size=val_size,
-            root=data_dir
+            preload=preload_device
         ).get_loaders()
         
         train_loader = loaders.train

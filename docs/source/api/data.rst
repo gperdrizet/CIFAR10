@@ -17,24 +17,20 @@ Classes
    :members:
    :undoc-members:
 
-.. autoclass:: image_classification_tools.pytorch.data.AugmentationStrategy
-   :members:
-   :undoc-members:
-
 Overview
 --------
 
-The data module provides a unified ``DataPipeline`` class that handles all data loading and preparation in a single call. The pipeline automatically detects dataset structure, performs intelligent splitting, and handles augmentation with optimal strategies.
+The data module provides a unified ``DataPipeline`` class that handles all data loading and preparation in a single call. The pipeline automatically detects dataset structure, performs intelligent splitting, and handles augmentation with pregeneration and caching.
 
 Key features:
 
 * **Auto-detection**: Automatically detects if data source has pre-made train/test splits
 * **Outcome-based**: User specifies desired outcome (e.g., ``split='train/val/test'``), pipeline determines the how
 * **Intelligent splitting**: Performs minimal operations based on source structure and desired outcome
-* **Flexible augmentation**: Three strategies - none, on-the-fly, or pregenerated with parallel processing
+* **Pregenerated augmentation**: Augmented data is generated once and saved to disk for reuse
 * **Memory optimization**: GPU/CPU preloading or lazy loading based on use case
 * **Type-safe**: Returns frozen ``DataLoaders`` object with ``.train``, ``.val``, ``.test`` attributes
-* **Smart caching**: Reuses pregenerated augmentation with user-provided cache keys
+* **Smart caching**: Reuses pregenerated augmentation across training runs
 * **Dataset statistics**: Built-in method to compute mean/std for normalization
 
 Example usage
@@ -56,14 +52,14 @@ Basic workflow (CIFAR-10 with GPU preloading):
    # Create pipeline and get loaders in one call
    loaders = DataPipeline(
        data_source=datasets.CIFAR10,
+       data_dir='./data/pytorch/cifar10',  # Will download if not present
        split='train/val/test',
+       val_size=10000,
+       batch_size=128,
        train_transform=transform,
        eval_transform=transform,
        preload='gpu',
-       batch_size=128,
-       val_size=10000,
-       seed=42,
-       root='./data/cifar10'  # Will download if not present
+       seed=42
    ).get_loaders()
 
    # Access loaders via attributes
@@ -72,17 +68,17 @@ Basic workflow (CIFAR-10 with GPU preloading):
    test_loader = loaders.test
 
    # Display pipeline summary
-   print(loaders.split_info())
-   # Output: "Train: 40,000 | Val: 10,000 | Test: 10,000"
+   print(loaders.total_samples())
+   # Output: {'train': 40000, 'val': 10000, 'test': 10000}
    
    print(loaders.memory_estimate())
-   # Output: "Estimated memory: ~2.3 GB"
+   # Output: 2.3 (GB)
 
-With on-the-fly augmentation (lazy loading):
+With data augmentation (pregenerated):
 
 .. code-block:: python
 
-   from image_classification_tools.pytorch import DataPipeline, AugmentationStrategy
+   from image_classification_tools.pytorch import DataPipeline
 
    # Define augmentation transforms
    pil_augmentations = transforms.Compose([
@@ -96,48 +92,30 @@ With on-the-fly augmentation (lazy loading):
    ])
 
    # Define base transforms
-   train_transform = transforms.Compose([
+   base_transform = transforms.Compose([
        transforms.ToTensor(),
        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
    ])
-   
-   eval_transform = train_transform  # No augmentation for eval
 
-   # Create pipeline with on-the-fly augmentation
+   # Create pipeline with augmentation
+   # Augmented data is automatically pregenerated and saved to disk
    loaders = DataPipeline(
        data_source=datasets.CIFAR10,
+       data_dir='./data/pytorch/cifar10',
        split='train/val/test',
-       train_transform=train_transform,
-       eval_transform=eval_transform,
-       augmentation=AugmentationStrategy.ON_THE_FLY,
-       pil_augmentations=pil_augmentations,
-       tensor_augmentations=tensor_augmentations,
-       preload=None,  # Must use lazy loading for on-the-fly augmentation
        batch_size=128,
-       root='./data/cifar10'
-   ).get_loaders()
-
-With pregenerated augmentation (fast training):
-
-.. code-block:: python
-
-   # Create pipeline with pregenerated augmentation
-   loaders = DataPipeline(
-       data_source=datasets.CIFAR10,
-       split='train/val/test',
-       train_transform=train_transform,
-       eval_transform=eval_transform,
-       augmentation=AugmentationStrategy.PREGENERATED,
+       train_transform=base_transform,
+       eval_transform=base_transform,
+       preload='gpu',  # Preload augmented data to GPU for fast training
+       n_augmentations=5,  # Create 5 augmented copies per image
+       augmented_dataset_name='strong_aug_v1',  # Optional: defaults to 'depth_5'
        pil_augmentations=pil_augmentations,
-       tensor_augmentations=tensor_augmentations,
-       preload='gpu',  # Can preload since augmentation is fixed
-       batch_size=128,
-       cache_key='cifar10_standard_aug_v1',  # Reuse cached data if available
-       root='./data/cifar10'
+       tensor_augmentations=tensor_augmentations
    ).get_loaders()
    
-   # Second run with same cache_key will skip regeneration
-   # and load directly from cache
+   # Augmented data saved to: ./data/pytorch/augmented_cifar10/strong_aug_v1/
+   # Subsequent runs with same augmented_dataset_name load from cache
+   # Use force_regenerate=True to regenerate cached data
 
 Computing dataset statistics:
 
@@ -148,8 +126,8 @@ Computing dataset statistics:
    # Compute mean and std for normalization
    mean, std = DataPipeline.compute_dataset_stats(
        data_source=datasets.CIFAR10,
-       root='./data/cifar10',
-       channels=3
+       data_dir='./data/pytorch/cifar10',
+       num_samples=5000
    )
    print(f'Mean: {mean}')  # (0.4914, 0.4822, 0.4465)
    print(f'Std: {std}')    # (0.2470, 0.2435, 0.2616)
@@ -160,21 +138,18 @@ Computing dataset statistics:
        transforms.Normalize(mean=mean, std=std)
    ])
 
-Custom datasets (ImageFolder):
+Custom datasets (directory-based):
 
 .. code-block:: python
 
-   from torchvision.datasets import ImageFolder
-   
-   # Pipeline auto-detects ImageFolder structure
+   # Pipeline auto-detects directory structure
    loaders = DataPipeline(
-       data_source=ImageFolder,
+       data_source='./my_dataset',  # Path to dataset directory
+       data_dir='./my_dataset',
        split='train/val/test',
+       val_size=5000,
+       batch_size=64,
        train_transform=transform,
        eval_transform=transform,
-       preload='cpu',
-       batch_size=64,
-       val_size=5000,
-       root='./my_dataset/train'  # Point to train directory
+       preload='cpu'
    ).get_loaders()
-

@@ -38,14 +38,13 @@ transform = transforms.Compose([
 # Create data pipeline (handles everything in one call)
 loaders = DataPipeline(
     data_source=datasets.MNIST,
+    data_dir='./data/pytorch/mnist',
     split='train/val/test',
+    val_size=10000,
+    batch_size=64,
     train_transform=transform,
     eval_transform=transform,
-    preload='gpu',
-    batch_size=64,
-    val_size=10000,
-    download=True,
-    root='./data/mnist'
+    preload='gpu'
 ).get_loaders()
 
 # Access loaders via attributes
@@ -89,7 +88,7 @@ print(f'Test accuracy: {accuracy:.2f}%')
 ### Data augmentation
 
 ```python
-from image_classification_tools.pytorch import DataPipeline, AugmentationStrategy
+from image_classification_tools.pytorch import DataPipeline
 
 # Define augmentation transforms
 pil_augmentations = transforms.Compose([
@@ -108,34 +107,23 @@ base_transform = transforms.Compose([
     transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 ])
 
-# Create pipeline with on-the-fly augmentation
+# Create pipeline with augmentation (automatically pregenerated)
 loaders = DataPipeline(
     data_source=datasets.CIFAR10,
+    data_dir='./data/pytorch/cifar10',
     split='train/val/test',
+    batch_size=128,
     train_transform=base_transform,
     eval_transform=base_transform,
-    augmentation=AugmentationStrategy.ON_THE_FLY,
+    preload='gpu',  # Load augmented data to GPU for fast training
+    n_augmentations=5,  # 5 augmented copies per image
+    augmented_dataset_name='strong_aug_v1',  # Optional: defaults to 'depth_5'
     pil_augmentations=pil_augmentations,
-    tensor_augmentations=tensor_augmentations,
-    preload=None,  # Use lazy loading for on-the-fly augmentation
-    batch_size=128,
-    root='./data/cifar10'
+    tensor_augmentations=tensor_augmentations
 ).get_loaders()
 
-# Or use pregenerated augmentation (faster training)
-loaders = DataPipeline(
-    data_source=datasets.CIFAR10,
-    split='train/val/test',
-    train_transform=base_transform,
-    eval_transform=base_transform,
-    augmentation=AugmentationStrategy.PREGENERATED,
-    pil_augmentations=pil_augmentations,
-    tensor_augmentations=tensor_augmentations,
-    preload='gpu',
-    cache_key='cifar10_aug_v1',  # Reuse cached data
-    batch_size=128,
-    root='./data/cifar10'
-).get_loaders()
+# Augmented data is saved to: ./data/pytorch/augmented_cifar10/strong_aug_v1/
+# Subsequent runs with same augmented_dataset_name will load from cache
 ```
 
 ### Hyperparameter optimization

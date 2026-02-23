@@ -8,7 +8,6 @@ import json
 import shutil
 import warnings
 from dataclasses import dataclass
-from enum import Enum
 from multiprocessing import Pool
 from pathlib import Path
 from typing import Tuple, Optional, Dict, List, Any
@@ -17,14 +16,6 @@ import torch
 from torch.utils.data import DataLoader, Dataset, TensorDataset, Subset
 from torchvision import datasets, transforms
 from tqdm import tqdm
-
-
-class AugmentationStrategy(Enum):
-    """Strategy for applying data augmentation."""
-
-    NONE = 'none'
-    ON_THE_FLY = 'on_the_fly'
-    PREGENERATED = 'pregenerated'
 
 
 @dataclass(frozen=True)
@@ -112,13 +103,16 @@ class DataLoaders:
 
 class DataPipeline:
     """Unified data loading pipeline with auto-detection and intelligent splitting.
-    User specifies desired splits, pipeline auto-detects source capabilities 
-    and performs minimal operations to achieve the outcome.
+    
+    Data augmentation is decoupled from training: augmented datasets are pregenerated 
+    and saved to disk, then loaded during training. The preload parameter controls 
+    whether data is loaded lazily from disk, preloaded to CPU, or preloaded to GPU.
     
     Examples:
-        # Basic usage with GPU preloading
+        # Basic usage without augmentation, GPU preloading
         >>> loaders = DataPipeline(
         ...     data_source=datasets.CIFAR10,
+        ...     data_dir='./data/pytorch/cifar10',
         ...     split='train/val/test',
         ...     train_transform=my_transform,
         ...     eval_transform=my_transform,
@@ -126,39 +120,39 @@ class DataPipeline:
         ... ).get_loaders()
         >>> train_loader = loaders.train
         
-        # With pregenerated augmentation
+        # With augmentation (pregenerated and saved to disk)
         >>> loaders = DataPipeline(
         ...     data_source=datasets.CIFAR10,
+        ...     data_dir='./data/pytorch/cifar10',
         ...     split='train/val/test',
         ...     train_transform=eval_transform,
         ...     eval_transform=eval_transform,
-        ...     augmentation='pregenerated',
-        ...     pil_augmentations=my_pil_augs,
-        ...     cache_key='cifar10_strong_aug_v1',
-        ...     preload='cpu'
+        ...     preload='cpu',
+        ...     n_augmentations=5,
+        ...     augmented_dataset_name='strong_aug_v1',  # Saved to ./data/pytorch/augmented_cifar10/strong_aug_v1/
+        ...     pil_augmentations=my_pil_augs
         ... ).get_loaders()
     """
     
     def __init__(
         self,
         data_source: type | str | Path,
-        split: str,
-        root: Optional[str | Path] = None,
-        train_transform: Optional[transforms.Compose] = None,
-        eval_transform: Optional[transforms.Compose] = None,
-        preload: Optional[str] = None,
-        augmentation: str | AugmentationStrategy = 'none',
-        pil_augmentations: Optional[transforms.Compose] = None,
-        tensor_augmentations: Optional[transforms.Compose] = None,
-        n_augmentations: int = 5,
-        cache_key: Optional[str] = None,
+        data_dir: Optional[str | Path] = None,
+        split: str = 'train/val/test',
         val_size: int = 10000,
         test_size: int = 10000,
         batch_size: int = 128,
         num_workers: int = 0,
-        seed: int = 42,
+        train_transform: Optional[transforms.Compose] = None,
+        eval_transform: Optional[transforms.Compose] = None,
         shuffle_train: bool = True,
+        preload: Optional[str] = None,
+        n_augmentations: int = 5,
+        augmented_dataset_name: Optional[str] = None,
+        pil_augmentations: Optional[transforms.Compose] = None,
+        tensor_augmentations: Optional[transforms.Compose] = None,
         force_regenerate: bool = False,
+        seed: int = 42,
         **loader_kwargs
     ):
         """Initialize DataPipeline.
@@ -166,15 +160,15 @@ class DataPipeline:
         Args:
             data_source: PyTorch dataset class (e.g., datasets.CIFAR10) or path to data directory
             split: Desired split outcome. Must be one of: 'train', 'train/val', 'train/test', 'train/val/test'
-            root: Root directory for data (required for PyTorch datasets)
-            train_transform: Transform for training data (required, will fail if None)
-            eval_transform: Transform for validation/test data (required, will fail if None)
+            data_dir: Root directory for dataset storage (required for PyTorch datasets)
+            train_transform: Transform for training data (optional, defaults to eval_transform if not provided)
+            eval_transform: Transform for validation/test data (optional, defaults to train_transform if not provided)
             preload: Loading strategy: 'gpu', 'cpu', or None for lazy loading from disk
-            augmentation: Augmentation strategy: 'none', 'on_the_fly', or 'pregenerated'
-            pil_augmentations: Custom PIL augmentation transforms (flip, rotate, etc.)
-            tensor_augmentations: Custom tensor augmentation transforms (blur, erasing, etc.)
-            n_augmentations: Number of augmented copies per image for pregenerated augmentation (default: 5)
-            cache_key: Required string for pregenerated augmentation caching
+            pil_augmentations: PIL augmentation transforms (flip, rotate, etc.). If provided, augmented data will be pregenerated.
+            tensor_augmentations: Tensor augmentation transforms (blur, erasing, etc.). Applied during pregeneration.
+            n_augmentations: Number of augmented copies per image (default: 5)
+            augmented_dataset_name: Name for augmented dataset directory. Defaults to 'depth_{n_augmentations}'. 
+                                   Saved to {data_dir.parent}/augmented_{data_dir.name}/{augmented_dataset_name}/
             val_size: Number of validation samples (default: 10000)
             test_size: Number of test samples for 3-way splits (default: 10000)
             batch_size: Batch size for all loaders (default: 128)
@@ -185,20 +179,25 @@ class DataPipeline:
             **loader_kwargs: Additional arguments passed to DataLoader
         
         Raises:
-            ValueError: If transforms are None, split format invalid, or incompatible config
+            ValueError: If split format invalid or incompatible config
         """
 
         self.data_source = data_source
         self.split_str = split
-        self.root = Path(root) if root else None
+        self.data_dir = Path(data_dir) if data_dir else None
         self.train_transform = train_transform
         self.eval_transform = eval_transform
         self.preload = preload
-        self.augmentation = AugmentationStrategy(augmentation) if isinstance(augmentation, str) else augmentation
         self.pil_augmentations = pil_augmentations
         self.tensor_augmentations = tensor_augmentations
         self.n_augmentations = n_augmentations
-        self.cache_key = cache_key
+        
+        # Auto-generate augmented dataset name if augmentations are specified
+        if augmented_dataset_name is None and (pil_augmentations is not None or tensor_augmentations is not None):
+            self.augmented_dataset_name = f"depth_{n_augmentations}"
+        else:
+            self.augmented_dataset_name = augmented_dataset_name
+        
         self.val_size = val_size
         self.test_size = test_size
         self.batch_size = batch_size
@@ -222,17 +221,16 @@ class DataPipeline:
 
 
     def _validate_config(self):
-        """Validate configuration and auto-correct incompatible settings with warnings."""
-
-        # Check transforms are provided
-        if self.train_transform is None:
+        """Validate configuration."""
+        
+        # Auto-set transforms if only one is provided
+        if self.train_transform is None and self.eval_transform is not None:
+            self.train_transform = self.eval_transform
+        elif self.eval_transform is None and self.train_transform is not None:
+            self.eval_transform = self.train_transform
+        elif self.train_transform is None and self.eval_transform is None:
             raise ValueError(
-                "train_transform is required. Please provide a transforms.Compose object."
-            )
-
-        if self.eval_transform is None:
-            raise ValueError(
-                "eval_transform is required. Please provide a transforms.Compose object."
+                "At least one of train_transform or eval_transform must be provided."
             )
         
         # Validate preload
@@ -241,31 +239,6 @@ class DataPipeline:
                 raise ValueError(
                     f"preload must be 'gpu', 'cpu', 'cuda:N', or None, got: {self.preload}"
                 )
-        
-        # Check augmentation + preload compatibility
-        if self.preload in ['gpu', 'cpu'] and self.augmentation == AugmentationStrategy.ON_THE_FLY:
-            warnings.warn(
-                "On-the-fly augmentation is not compatible with preloading. "
-                "Auto-correcting to 'pregenerated' augmentation.",
-                UserWarning
-            )
-
-            self.augmentation = AugmentationStrategy.PREGENERATED
-        
-        # Check cache_key for pregenerated augmentation
-        if self.augmentation == AugmentationStrategy.PREGENERATED and self.cache_key is None:
-            raise ValueError(
-                "cache_key is required when augmentation='pregenerated'. "
-                "Provide a unique string identifier for caching (e.g., 'cifar10_aug_v1')."
-            )
-        
-        # Warn about inefficient pregenerated + lazy loading
-        if self.preload is None and self.augmentation == AugmentationStrategy.PREGENERATED:
-            warnings.warn(
-                "Pregenerated augmentation with lazy loading is inefficient. "
-                "Consider using preload='cpu' or 'gpu' for better performance.",
-                UserWarning
-            )
 
 
     def _parse_split(self, split_str: str) -> List[str]:
@@ -396,29 +369,27 @@ class DataPipeline:
             if not full_path.exists():
                 raise ValueError(f"Directory not found: {full_path}")
             
-            # For augmentation, we need raw PIL images (no transform)
-            if self.augmentation == AugmentationStrategy.PREGENERATED:
+            # For augmentation pregeneration, we need raw PIL images (no transform)
+            if self.pil_augmentations is not None or self.tensor_augmentations is not None:
                 return datasets.ImageFolder(root=full_path, transform=None)
-
             else:
                 transform = self.train_transform if train else self.eval_transform
                 return datasets.ImageFolder(root=full_path, transform=transform)
         
         else:
             # PyTorch dataset class
-            if self.root is None:
-                raise ValueError("root directory is required for PyTorch datasets")
+            if self.data_dir is None:
+                raise ValueError("data_dir is required for PyTorch datasets")
             
-            # For augmentation, we need raw PIL images (no transform)
-            if self.augmentation == AugmentationStrategy.PREGENERATED:
+            # For augmentation pregeneration, we need raw PIL images (no transform)
+            if self.pil_augmentations is not None or self.tensor_augmentations is not None:
                 transform = None
-
             else:
                 transform = self.train_transform if train else self.eval_transform
             
             try:
                 return self.data_source(
-                    root=self.root,
+                    root=self.data_dir,
                     train=train,
                     download=False,
                     transform=transform
@@ -429,7 +400,7 @@ class DataPipeline:
                 # Download if not found
                 print(f"Downloading {'train' if train else 'test'} dataset...")
                 return self.data_source(
-                    root=self.root,
+                    root=self.data_dir,
                     train=train,
                     download=True,
                     transform=transform
@@ -536,49 +507,6 @@ class DataPipeline:
         return TransformedDataset(dataset, transform)
 
 
-    def _apply_augmentation_on_the_fly(self, dataset: Dataset) -> Dataset:
-        """Wrap dataset to apply augmentation transforms on-the-fly.
-        
-        Args:
-            dataset: Dataset to wrap
-        
-        Returns:
-            Wrapped dataset with augmentation
-        """
-        # Create augmentation transform
-        if self.pil_augmentations is None:
-
-            # Default augmentations
-            aug_transform = transforms.Compose([
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomRotation(degrees=15),
-                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
-            ])
-
-        else:
-            aug_transform = self.pil_augmentations
-        
-        # Inline AugmentedSubset implementation
-        class AugmentedDataset(Dataset):
-            def __init__(self, subset, augmentation):
-                self.subset = subset
-                self.augmentation = augmentation
-            
-            def __len__(self):
-                return len(self.subset)
-            
-            def __getitem__(self, idx):
-
-                image, label = self.subset[idx]
-
-                if self.augmentation:
-                    image = self.augmentation(image)
-
-                return image, label
-        
-        return AugmentedDataset(dataset, aug_transform)
-
-
     def _generate_preaugmented_dataset(self, train_dataset: Dataset) -> Dataset:
         """Generate preaugmented dataset with parallel processing.
         
@@ -588,7 +516,9 @@ class DataPipeline:
         Returns:
             TensorDataset with pregenerated augmented data
         """
-        output_dir = self.root / 'augmented_cache' / self.cache_key
+        # Construct output directory: {data_dir.parent}/augmented_{data_dir.name}/{augmented_dataset_name}/
+        augmented_base_dir = self.data_dir.parent / f"augmented_{self.data_dir.name}"
+        output_dir = augmented_base_dir / self.augmented_dataset_name
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # Check cache
@@ -680,16 +610,47 @@ class DataPipeline:
         images_tensor = torch.stack(all_images)
         labels_tensor = torch.tensor(all_labels, dtype=torch.long)
         
+        # Calculate memory size estimate
+        bytes_total = images_tensor.numel() * images_tensor.element_size() + labels_tensor.numel() * labels_tensor.element_size()
+        memory_size_gb = bytes_total / (1024 ** 3)
+        
+        # Get image shape and number of classes
+        sample_image = all_images[0]
+        image_shape = list(sample_image.shape)
+        num_classes = len(set(all_labels))
+        
         # Save to cache
         print(f"Saving to cache: {output_dir}")
         torch.save(images_tensor, output_dir / 'augmented_images.pt')
         torch.save(labels_tensor, output_dir / 'augmented_labels.pt')
         
+        # Enhanced metadata with more details
+        import sys
+        from datetime import datetime
+        
+        # Get string representations of augmentations
+        pil_aug_strs = [str(t) for t in pil_augs.transforms] if hasattr(pil_augs, 'transforms') else [str(pil_augs)]
+        tensor_aug_strs = [str(t) for t in tensor_augs.transforms] if hasattr(tensor_augs, 'transforms') else [str(tensor_augs)]
+        
         metadata = {
-            'cache_key': self.cache_key,
+            'dataset_name': self.augmented_dataset_name,
+            'created': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'source_dataset': self.data_source.__name__ if hasattr(self.data_source, '__name__') else str(self.data_source),
             'original_size': len(train_dataset),
-            'augmented_size': len(all_images),
             'n_augmentations': self.n_augmentations,
+            'total_images': len(all_images),
+            'memory_size_gb': round(memory_size_gb, 3),
+            'image_shape': image_shape,
+            'num_classes': num_classes,
+            'split_sizes': {
+                'train': None,  # Will be updated later if needed
+                'val': None,
+                'test': None
+            },
+            'pil_augmentations': pil_aug_strs,
+            'tensor_augmentations': tensor_aug_strs,
+            'pytorch_version': torch.__version__,
+            'python_version': f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
         }
 
         with open(output_dir / 'metadata.json', 'w') as f:
@@ -698,7 +659,12 @@ class DataPipeline:
         return TensorDataset(images_tensor, labels_tensor)
 
 
-    def _preload_to_device(self, dataset: Dataset, device_str: str, desc: str = "Preloading") -> TensorDataset:
+    def _preload_to_device(
+            self,
+            dataset: Dataset,
+            device_str: str,
+            desc: str = "Preloading"
+    ) -> TensorDataset:
         """Preload dataset to CPU or GPU memory.
         
         Args:
@@ -824,21 +790,17 @@ class DataPipeline:
         print("Creating splits...")
         train_split, val_split, test_split = self._create_splits(train_raw, test_raw)
         
-        # Apply augmentation if needed
-        if self.augmentation == AugmentationStrategy.PREGENERATED:
-            print("\nApplying pregenerated augmentation...")
+        # Apply augmentation if specified
+        if self.pil_augmentations is not None or self.tensor_augmentations is not None:
+            print("\nPregenerating augmented dataset...")
             train_split = self._generate_preaugmented_dataset(train_split)
             
-            # For PREGENERATED augmentation, val/test splits need eval_transform applied
+            # Val/test splits need eval_transform applied
             # since they were loaded without transforms (as Subsets of raw dataset)
             if val_split is not None:
                 val_split = self._apply_transform_to_dataset(val_split, self.eval_transform)
             if test_split is not None:
                 test_split = self._apply_transform_to_dataset(test_split, self.eval_transform)
-                
-        elif self.augmentation == AugmentationStrategy.ON_THE_FLY and train_split is not None:
-            print("Setting up on-the-fly augmentation...")
-            train_split = self._apply_augmentation_on_the_fly(train_split)
         
         # Preload if requested (skip test set to save VRAM)
         if self.preload is not None:
@@ -906,14 +868,14 @@ class DataPipeline:
     @staticmethod
     def compute_dataset_stats(
         data_source: type,
-        root: str | Path,
+        data_dir: str | Path,
         num_samples: int = 5000
     ) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
         """Compute mean and std for dataset normalization.
         
         Args:
             data_source: PyTorch dataset class (e.g., datasets.CIFAR10)
-            root: Root directory for data
+            data_dir: Root directory for dataset storage
             num_samples: Number of samples to use for computation (default: 5000)
         
         Returns:
@@ -922,7 +884,7 @@ class DataPipeline:
         Example:
             >>> mean, std = DataPipeline.compute_dataset_stats(
             ...     datasets.CIFAR10,
-            ...     root='./data',
+            ...     data_dir='./data/pytorch/cifar10',
             ...     num_samples=5000
             ... )
             >>> print(f"Mean: {mean}, Std: {std}")
@@ -931,7 +893,7 @@ class DataPipeline:
         
         # Load dataset with ToTensor only (no normalization)
         dataset = data_source(
-            root=root,
+            root=data_dir,
             train=True,
             download=False,
             transform=transforms.ToTensor()
@@ -976,6 +938,7 @@ def _augment_batch_worker(args):
     
     for img, label in images_labels:
         for _ in range(n_augmentations):
+
             # Apply PIL augmentations
             aug_img = pil_aug(img)
             

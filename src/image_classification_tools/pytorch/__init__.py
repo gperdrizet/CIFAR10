@@ -2,8 +2,7 @@
 
 from image_classification_tools.pytorch.data import (
     DataPipeline,
-    DataLoaders,
-    AugmentationStrategy
+    DataLoaders
 )
 from image_classification_tools.pytorch.evaluation import evaluate_model
 from image_classification_tools.pytorch.training import train_model
@@ -26,7 +25,6 @@ __all__ = [
     # Data loading and preprocessing
     'DataPipeline',
     'DataLoaders',
-    'AugmentationStrategy',
     # Model evaluation
     'evaluate_model',
     # Model training

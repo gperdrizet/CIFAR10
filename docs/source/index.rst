@@ -38,39 +38,26 @@ Minimal example classifying MNIST digits:
 .. code-block:: python
 
    import torch
-   from pathlib import Path
    from torchvision import datasets, transforms
-   from image_classification_tools.pytorch.data import (
-       load_datasets, prepare_splits, create_dataloaders
-   )
-   from image_classification_tools.pytorch.training import train_model
+   from image_classification_tools.pytorch import DataPipeline, train_model
 
-   # Load data
+   # Define transforms
    transform = transforms.Compose([
        transforms.ToTensor(),
        transforms.Normalize((0.5,), (0.5,))
    ])
    
-   # Load, split, and create dataloaders
-   train_dataset, test_dataset = load_datasets(
+   # Create data pipeline (handles loading, splitting, and preloading)
+   loaders = DataPipeline(
        data_source=datasets.MNIST,
+       data_dir='./data/mnist',
+       split='train/val/test',
+       val_size=10000,
+       batch_size=64,
        train_transform=transform,
        eval_transform=transform,
-       download=True,
-       root=Path('./data/mnist')
-   )
-   
-   train_dataset, val_dataset, test_dataset = prepare_splits(
-       train_dataset, test_dataset, train_val_split=0.8
-   )
-   
-   device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-   train_loader, val_loader, test_loader = create_dataloaders(
-       train_dataset, val_dataset, test_dataset,
-       batch_size=64,
-       preload_to_memory=True,
-       device=device
-   )
+       preload='gpu'
+   ).get_loaders()
 
    # Define model
    model = torch.nn.Sequential(
@@ -86,8 +73,8 @@ Minimal example classifying MNIST digits:
    
    history = train_model(
        model=model,
-       train_loader=train_loader,
-       val_loader=val_loader,
+       train_loader=loaders.train,
+       val_loader=loaders.val,
        criterion=criterion,
        optimizer=optimizer,
        epochs=10
