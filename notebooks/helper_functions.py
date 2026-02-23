@@ -58,10 +58,10 @@ def load_history_from_source(
                 return None
             
             try:
-                # Try JSON format first
+                # Download from training_histories/ subdirectory
                 downloaded_path = hf_hub_download(
                     repo_id=repo_id,
-                    filename=history_name,
+                    filename=f'training_histories/{history_name}',
                     repo_type=repo_type
                 )
                 
@@ -72,11 +72,11 @@ def load_history_from_source(
                 return history
             
             except Exception:
-                # Fallback to old pickle format
+                # Fallback to pickle format in training_histories/
                 history_name_pkl = model_name.replace('.pth', '_history.pkl').replace('.safetensors', '_history.pkl')
                 downloaded_path = hf_hub_download(
                     repo_id=repo_id,
-                    filename=history_name_pkl,
+                    filename=f'training_histories/{history_name_pkl}',
                     repo_type=repo_type
                 )
                 
@@ -147,10 +147,10 @@ def load_model_from_source(
             
             print(f'Downloading model from Hugging Face: {repo_id}/{model_name}')
             
-            # Download model to cache
+            # Download from models/ subdirectory
             downloaded_path = hf_hub_download(
                 repo_id=repo_id,
-                filename=model_name,
+                filename=f'models/{model_name}',
                 repo_type=repo_type
             )
             
@@ -203,16 +203,18 @@ def upload_to_huggingface(
     model_name: str,
     commit_message: str = None,
     repo_id: str = None,
-    repo_type: str = 'model'
+    repo_type: str = 'model',
+    path_in_repo: str = None
 ) -> str:
-    '''Upload a model to Hugging Face Hub.
+    '''Upload a file to Hugging Face Hub.
     
     Args:
-        model_path: Path to the model file to upload
-        model_name: Name for the model in the repository (e.g., 'dnn.pth')
+        model_path: Path to the file to upload
+        model_name: Name for the file in the repository (e.g., 'dnn.pth')
         commit_message: Optional commit message (defaults to model name)
         repo_id: Optional repository ID (uses HF_REPO_ID env var if not provided)
         repo_type: Type of repository (default: 'model')
+        path_in_repo: Optional path within repo (e.g., 'models/dnn.pth'). If None, uses model_name
     
     Returns:
         URL of the uploaded file, or None if upload failed
@@ -226,10 +228,13 @@ def upload_to_huggingface(
             
         commit_message = commit_message or f'Upload {model_name}'
         
+        # Use path_in_repo if provided, otherwise use model_name
+        repo_path = path_in_repo or model_name
+        
         # Upload file to repository
         url = api.upload_file(
             path_or_fileobj=str(model_path),
-            path_in_repo=model_name,
+            path_in_repo=repo_path,
             repo_id=repo_id,
             repo_type=repo_type,
             commit_message=commit_message
@@ -313,22 +318,24 @@ def save_and_upload_model(
         base_name = model_name.replace('.pth', '')
         commit_msg = f'Updated {base_name}'
         
-        # Upload model
+        # Upload model to models/ subdirectory
         upload_to_huggingface(
             model_path=model_path,
             model_name=model_name,
-            commit_message=commit_msg
+            commit_message=commit_msg,
+            path_in_repo=f'models/{model_name}'
         )
         
-        # Upload history if it exists
+        # Upload history to training_histories/ subdirectory if it exists
         if history is not None:
             upload_to_huggingface(
                 model_path=history_path,
                 model_name=history_name,
-                commit_message=commit_msg
+                commit_message=commit_msg,
+                path_in_repo=f'training_histories/{history_name}'
             )
         
-        # Upload Optuna study database if provided
+        # Upload Optuna study database to optuna_results/ subdirectory if provided
         if optuna_study_path is not None and optuna_study_path.exists():
             if optuna_study_name is None:
                 optuna_study_name = optuna_study_path.name
@@ -336,7 +343,8 @@ def save_and_upload_model(
             upload_to_huggingface(
                 model_path=optuna_study_path,
                 model_name=optuna_study_name,
-                commit_message=commit_msg
+                commit_message=commit_msg,
+                path_in_repo=f'optuna_results/{optuna_study_name}'
             )
             print(f'Optuna study uploaded: {optuna_study_name}')
     else:
