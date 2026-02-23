@@ -152,6 +152,7 @@ class DataPipeline:
         augmentation: str | AugmentationStrategy = 'none',
         pil_augmentations: Optional[transforms.Compose] = None,
         tensor_augmentations: Optional[transforms.Compose] = None,
+        n_augmentations: int = 5,
         cache_key: Optional[str] = None,
         val_size: int = 10000,
         test_size: int = 10000,
@@ -174,6 +175,7 @@ class DataPipeline:
             augmentation: Augmentation strategy: 'none', 'on_the_fly', or 'pregenerated'
             pil_augmentations: Custom PIL augmentation transforms (flip, rotate, etc.)
             tensor_augmentations: Custom tensor augmentation transforms (blur, erasing, etc.)
+            n_augmentations: Number of augmented copies per image for pregenerated augmentation (default: 5)
             cache_key: Required string for pregenerated augmentation caching
             val_size: Number of validation samples (default: 10000)
             test_size: Number of test samples for 3-way splits (default: 10000)
@@ -197,6 +199,7 @@ class DataPipeline:
         self.augmentation = AugmentationStrategy(augmentation) if isinstance(augmentation, str) else augmentation
         self.pil_augmentations = pil_augmentations
         self.tensor_augmentations = tensor_augmentations
+        self.n_augmentations = n_augmentations
         self.cache_key = cache_key
         self.val_size = val_size
         self.test_size = test_size
@@ -527,6 +530,33 @@ class DataPipeline:
         return train_dataset, None, test_dataset
 
 
+
+    def _apply_transform_to_dataset(self, dataset: Dataset, transform: transforms.Compose) -> Dataset:
+        """Wrap dataset to apply a transform.
+        
+        Args:
+            dataset: Dataset to wrap
+            transform: Transform to apply
+        
+        Returns:
+            Wrapped dataset with transform
+        """
+        class TransformedDataset(Dataset):
+            def __init__(self, base_dataset, transform):
+                self.dataset = base_dataset
+                self.transform = transform
+            
+            def __len__(self):
+                return len(self.dataset)
+            
+            def __getitem__(self, idx):
+                image, label = self.dataset[idx]
+                if self.transform:
+                    image = self.transform(image)
+                return image, label
+        
+        return TransformedDataset(dataset, transform)
+
     def _apply_augmentation_on_the_fly(self, dataset: Dataset) -> Dataset:
         """Wrap dataset to apply augmentation transforms on-the-fly.
         
@@ -618,8 +648,8 @@ class DataPipeline:
         
         print(f"\nGenerating augmented dataset with {self.num_workers} workers...")
         print(f"Source dataset: {len(train_dataset)} images")
-        print(f"Augmentations per image: 5")
-        print(f"Total augmented images: {len(train_dataset) * 5}")
+        print(f"Augmentations per image: {self.n_augmentations}")
+        print(f"Total augmented images: {len(train_dataset) * self.n_augmentations}")
         
         # Collect all images and labels
         images_labels = []
@@ -632,7 +662,7 @@ class DataPipeline:
         chunks = []
         for i in range(0, len(images_labels), chunk_size):
             chunk = images_labels[i:i + chunk_size]
-            chunks.append((chunk, 5, pil_augs, tensor_augs, to_tensor, normalize))
+            chunks.append((chunk, self.n_augmentations, pil_augs, tensor_augs, to_tensor, normalize))
         
         # Process in parallel
         all_images = []
@@ -670,7 +700,7 @@ class DataPipeline:
             'cache_key': self.cache_key,
             'original_size': len(train_dataset),
             'augmented_size': len(all_images),
-            'n_augmentations': 5,
+            'n_augmentations': self.n_augmentations,
         }
         with open(output_dir / 'metadata.json', 'w') as f:
             json.dump(metadata, f, indent=2)
@@ -741,6 +771,14 @@ class DataPipeline:
         if self.augmentation == AugmentationStrategy.PREGENERATED:
             print("\nApplying pregenerated augmentation...")
             train_split = self._generate_preaugmented_dataset(train_split)
+            
+            # For PREGENERATED augmentation, val/test splits need eval_transform applied
+            # since they were loaded without transforms (as Subsets of raw dataset)
+            if val_split is not None:
+                val_split = self._apply_transform_to_dataset(val_split, self.eval_transform)
+            if test_split is not None:
+                test_split = self._apply_transform_to_dataset(test_split, self.eval_transform)
+                
         elif self.augmentation == AugmentationStrategy.ON_THE_FLY and train_split is not None:
             print("Setting up on-the-fly augmentation...")
             train_split = self._apply_augmentation_on_the_fly(train_split)
