@@ -112,10 +112,8 @@ class DataLoaders:
 
 class DataPipeline:
     """Unified data loading pipeline with auto-detection and intelligent splitting.
-    
-    This class replaces the old 3-step workflow (load → split → create_dataloaders) with
-    a single, outcome-based API. User specifies desired splits, pipeline auto-detects
-    source capabilities and performs minimal operations to achieve the outcome.
+    User specifies desired splits, pipeline auto-detects source capabilities 
+    and performs minimal operations to achieve the outcome.
     
     Examples:
         # Basic usage with GPU preloading
@@ -371,38 +369,6 @@ class DataPipeline:
                 # 2-way split: train/val
                 plan['split_train_into_train_val'] = True
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                
             elif needs_test:
                 # 2-way split: train/test
                 plan['split_train_into_all'] = True
@@ -421,6 +387,7 @@ class DataPipeline:
             PyTorch Dataset
         """
         if isinstance(self.data_source, (str, Path)):
+
             # Directory-based dataset
             data_dir = Path(self.data_source)
             subdir = 'train' if train else 'test'
@@ -432,6 +399,7 @@ class DataPipeline:
             # For augmentation, we need raw PIL images (no transform)
             if self.augmentation == AugmentationStrategy.PREGENERATED:
                 return datasets.ImageFolder(root=full_path, transform=None)
+
             else:
                 transform = self.train_transform if train else self.eval_transform
                 return datasets.ImageFolder(root=full_path, transform=transform)
@@ -444,6 +412,7 @@ class DataPipeline:
             # For augmentation, we need raw PIL images (no transform)
             if self.augmentation == AugmentationStrategy.PREGENERATED:
                 transform = None
+
             else:
                 transform = self.train_transform if train else self.eval_transform
             
@@ -454,7 +423,9 @@ class DataPipeline:
                     download=False,
                     transform=transform
                 )
+
             except (RuntimeError, FileNotFoundError):
+
                 # Download if not found
                 print(f"Downloading {'train' if train else 'test'} dataset...")
                 return self.data_source(
@@ -465,7 +436,11 @@ class DataPipeline:
                 )
 
 
-    def _create_splits(self, train_dataset: Dataset, test_dataset: Optional[Dataset] = None) -> Tuple[Dataset, Optional[Dataset], Optional[Dataset]]:
+    def _create_splits(
+            self,
+            train_dataset: Dataset,
+            test_dataset: Optional[Dataset] = None
+    ) -> Tuple[Dataset, Optional[Dataset], Optional[Dataset]]:
         """Create train/val/test splits according to plan.
         
         Args:
@@ -530,7 +505,6 @@ class DataPipeline:
         return train_dataset, None, test_dataset
 
 
-
     def _apply_transform_to_dataset(self, dataset: Dataset, transform: transforms.Compose) -> Dataset:
         """Wrap dataset to apply a transform.
         
@@ -543,6 +517,7 @@ class DataPipeline:
         """
         class TransformedDataset(Dataset):
             def __init__(self, base_dataset, transform):
+
                 self.dataset = base_dataset
                 self.transform = transform
             
@@ -550,12 +525,16 @@ class DataPipeline:
                 return len(self.dataset)
             
             def __getitem__(self, idx):
+
                 image, label = self.dataset[idx]
+
                 if self.transform:
                     image = self.transform(image)
+
                 return image, label
         
         return TransformedDataset(dataset, transform)
+
 
     def _apply_augmentation_on_the_fly(self, dataset: Dataset) -> Dataset:
         """Wrap dataset to apply augmentation transforms on-the-fly.
@@ -568,12 +547,14 @@ class DataPipeline:
         """
         # Create augmentation transform
         if self.pil_augmentations is None:
+
             # Default augmentations
             aug_transform = transforms.Compose([
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.RandomRotation(degrees=15),
                 transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
             ])
+
         else:
             aug_transform = self.pil_augmentations
         
@@ -587,9 +568,12 @@ class DataPipeline:
                 return len(self.subset)
             
             def __getitem__(self, idx):
+
                 image, label = self.subset[idx]
+
                 if self.augmentation:
                     image = self.augmentation(image)
+
                 return image, label
         
         return AugmentedDataset(dataset, aug_transform)
@@ -637,12 +621,14 @@ class DataPipeline:
         # Convert to tensor and normalize (from train_transform)
         to_tensor = transforms.ToTensor()
         normalize = None
+
         for t in self.train_transform.transforms:
             if isinstance(t, transforms.Normalize):
                 normalize = t
                 break
         
         if normalize is None:
+
             # Use default normalization
             normalize = transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         
@@ -653,6 +639,7 @@ class DataPipeline:
         
         # Collect all images and labels
         images_labels = []
+
         for idx in tqdm(range(len(train_dataset)), desc="Loading images"):
             img, label = train_dataset[idx]
             images_labels.append((img, label))
@@ -660,6 +647,7 @@ class DataPipeline:
         # Divide into chunks for parallel processing
         chunk_size = max(1, len(images_labels) // max(1, self.num_workers))
         chunks = []
+
         for i in range(0, len(images_labels), chunk_size):
             chunk = images_labels[i:i + chunk_size]
             chunks.append((chunk, self.n_augmentations, pil_augs, tensor_augs, to_tensor, normalize))
@@ -678,6 +666,7 @@ class DataPipeline:
         else:
             # Serial processing
             results = []
+
             for chunk in tqdm(chunks, desc="Generating augmented data"):
                 results.append(_augment_batch_worker(chunk))
         
@@ -702,6 +691,7 @@ class DataPipeline:
             'augmented_size': len(all_images),
             'n_augmentations': self.n_augmentations,
         }
+
         with open(output_dir / 'metadata.json', 'w') as f:
             json.dump(metadata, f, indent=2)
         
@@ -718,14 +708,19 @@ class DataPipeline:
         
         Returns:
             TensorDataset with data on device
+            
+        Raises:
+            RuntimeError: If dataset doesn't fit in device memory
         """
         # Handle device string: 'cpu', 'gpu' (default cuda:0), or 'cuda:N'
         if device_str == 'gpu':
             device = torch.device('cuda:0')  # Default to GPU 0
             device_display = 'GPU:0'
+
         elif device_str.startswith('cuda:'):
             device = torch.device(device_str)
             device_display = device_str.upper()
+
         else:
             device = torch.device('cpu')
             device_display = 'CPU'
@@ -735,12 +730,74 @@ class DataPipeline:
         images = []
         labels = []
         
-        for img, label in tqdm(dataset, desc=desc):
-            images.append(img)
-            labels.append(label)
-        
-        images_tensor = torch.stack(images).to(device)
-        labels_tensor = torch.tensor(labels).to(device)
+        try:
+            for img, label in tqdm(dataset, desc=desc):
+                images.append(img)
+                labels.append(label)
+            
+            images_tensor = torch.stack(images).to(device)
+            labels_tensor = torch.tensor(labels).to(device)
+            
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                # Calculate approximate memory requirement
+                if images:
+                    sample_img = images[0]
+                    bytes_per_image = sample_img.numel() * sample_img.element_size()
+                    total_bytes = len(dataset) * bytes_per_image
+                    total_gb = total_bytes / (1024 ** 3)
+                    
+                    raise RuntimeError(
+                        f"\n{'='*70}\n"
+                        f"OUT OF MEMORY ERROR\n"
+                        f"{'='*70}\n"
+                        f"Failed to preload dataset to {device_display}.\n"
+                        f"Dataset size: {len(dataset):,} samples\n"
+                        f"Estimated memory required: {total_gb:.2f} GB\n"
+                        f"\nSuggestions:\n"
+                        f"  1. Use preload=None for lazy loading from disk\n"
+                        f"  2. Use preload='cpu' instead of 'gpu' (if currently using GPU)\n"
+                        f"  3. Reduce batch_size or dataset size\n"
+                        f"  4. Use fewer augmentations (reduce n_augmentations)\n"
+                        f"  5. Use on-the-fly augmentation instead of pregenerated\n"
+                        f"{'='*70}"
+                    ) from e
+                else:
+                    raise RuntimeError(
+                        f"Out of memory when preloading to {device_display}. "
+                        f"Try using preload=None for lazy loading from disk."
+                    ) from e
+            else:
+                raise
+                
+        except MemoryError as e:
+            # CPU memory error
+            if images:
+                sample_img = images[0]
+                bytes_per_image = sample_img.numel() * sample_img.element_size()
+                total_bytes = len(dataset) * bytes_per_image
+                total_gb = total_bytes / (1024 ** 3)
+                
+                raise MemoryError(
+                    f"\n{'='*70}\n"
+                    f"OUT OF MEMORY ERROR\n"
+                    f"{'='*70}\n"
+                    f"Failed to preload dataset to CPU memory.\n"
+                    f"Dataset size: {len(dataset):,} samples\n"
+                    f"Estimated memory required: {total_gb:.2f} GB\n"
+                    f"\nSuggestions:\n"
+                    f"  1. Use preload=None for lazy loading from disk\n"
+                    f"  2. Reduce batch_size or dataset size\n"
+                    f"  3. Use fewer augmentations (reduce n_augmentations)\n"
+                    f"  4. Use on-the-fly augmentation instead of pregenerated\n"
+                    f"  5. Close other applications to free up RAM\n"
+                    f"{'='*70}"
+                ) from e
+            else:
+                raise MemoryError(
+                    "Out of memory when preloading to CPU. "
+                    "Try using preload=None for lazy loading from disk."
+                ) from e
         
         return TensorDataset(images_tensor, labels_tensor)
 
