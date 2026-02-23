@@ -46,6 +46,7 @@ CIFAR-10 consists of 60,000 32×32 color images across 10 classes:
 - [Docker](https://www.docker.com/get-started)
 - [Visual Studio Code](https://code.visualstudio.com/)
 - [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
+- **Optional**: NVIDIA GPU with drivers ≥545 (for GPU configuration)
 
 ### Setup
 
@@ -56,12 +57,18 @@ git clone https://github.com/gperdrizet/CIFAR10.git
 
 2. Open the repository directory in VS Code
 
-3. When prompted, click **"Reopen in Container"** or use the command palette (Ctrl+Shift+P / Cmd+Shift+P) and select **"Dev Containers: Reopen in Container"**
+3. When prompted, **choose your configuration**:
+   - **DeepLearning GPU**: For Linux/WSL2 with NVIDIA GPU (recommended for training)
+   - **DeepLearning CPU**: For Mac or machines without GPU (suitable for code development and testing)
 
-4. Wait for the container to build and initialize (first time only). The devcontainer will:
+4. Click **"Reopen in Container"** or use the command palette (Ctrl+Shift+P / Cmd+Shift+P) and select **"Dev Containers: Reopen in Container"**
+
+5. Wait for the container to build and initialize (first time only). The devcontainer will:
    - Set up the Python environment
-   - Install all dependencies
+   - Install all dependencies (GPU or CPU version of PyTorch)
    - Download the CIFAR-10 dataset
+
+**Note**: The CPU configuration works on any machine but training will be significantly slower (10-50x). It's perfect for following along with the material without a GPU. See [.devcontainer/README.md](.devcontainer/README.md) for more details.
 
 ### Running the notebooks
 
@@ -89,17 +96,32 @@ See [HUGGINGFACE.md](HUGGINGFACE.md) for detailed setup instructions.
 
 ## Environment
 
-This project uses a [Dev Container](https://code.visualstudio.com/docs/devcontainers/containers) based on the [deeplearning-GPU](https://github.com/gperdrizet/deeplearning-GPU) template. The container provides a fully configured deep learning environment with PyTorch, TensorFlow, and CUDA - no manual setup required. Just open the project in VS Code and you're ready to train models.
+This project uses [Dev Containers](https://code.visualstudio.com/docs/devcontainers/containers) with two configurations to support both GPU and CPU-only machines:
+
+**GPU Configuration** (recommended for training):
+- Based on [deeplearning-GPU](https://github.com/gperdrizet/deeplearning-GPU) template
+- Pre-installed PyTorch with CUDA 12.6 support
+- Works with any NVIDIA GPU from GTX 1050 to RTX 5090 (Pascal architecture and newer)
+- Requires: Linux/WSL2, NVIDIA drivers ≥545, Docker with GPU support
+
+**CPU Configuration** (for Mac and non-GPU machines):
+- Based on Microsoft's Python 3.10 devcontainer
+- PyTorch CPU-only (auto-installed)
+- Works on any machine (Mac, Windows, Linux)
+- Good for code development, testing, and learning without GPU
 
 **Why use this setup?**
 - **Zero configuration**: CUDA, cuDNN, and ML frameworks are pre-installed
-- **Wide GPU support**: Works with any NVIDIA GPU from GTX 1050 to RTX 5090 (Pascal architecture and newer)
-- **Cross-platform**: Identical environment on Windows, Linux, or cloud VMs
+- **Cross-platform**: Identical environment across different machines
 - **Reproducible**: Everyone gets the exact same dependencies
+- **Flexible**: Choose GPU or CPU based on your hardware
+
+The code automatically detects your hardware, so both configurations work seamlessly. Training on CPU will be slower but still functional.
 
 | Resource | Link |
 |----------|------|
-| Template Repository | [gperdrizet/deeplearning-GPU](https://github.com/gperdrizet/deeplearning-GPU) |
+| Dev Container Guide | [.devcontainer/README.md](.devcontainer/README.md) |
+| GPU Template Repository | [gperdrizet/deeplearning-GPU](https://github.com/gperdrizet/deeplearning-GPU) |
 | Docker Image | [gperdrizet/deeplearning-gpu](https://hub.docker.com/repository/docker/gperdrizet/deeplearning-gpu) |
 
 ## Dependencies
