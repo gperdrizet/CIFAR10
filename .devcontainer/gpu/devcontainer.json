@@ -8,7 +8,7 @@
 	"name": "DeepLearning GPU",
 	"image": "gperdrizet/deeplearning-gpu",
     "runArgs": [
-		"--gpus", "all",              // Enable all available GPUs in the container
+		"--gpus", "device=2",         // Enable only GPU device 2 in the container
 		"--pid=host",                 // Use host PIDs, needed for nvidia-smi process list
 		"--ipc=host",                 // Connect to host interprocess namespace
 		"--ulimit", "memlock=-1",     // Turn of memory lock limit
@@ -66,8 +66,8 @@
 	"onCreateCommand": "",
 
 	// Use 'postCreateCommand' to run commands once after the container is created
-	// Makes empty directories for logs and models, and pre-downloads CIFAR-10 data
-	"postCreateCommand": "mkdir -p models/pytorch && pip install -e .",
+	// Makes empty directories for logs and models, installs the package, and installs Sphinx doc build tools
+	"postCreateCommand": "mkdir -p models/pytorch && pip install -e . && pip install sphinx sphinx-rtd-theme nbsphinx sphinx-autodoc-typehints ipykernel",
 
 	// Use 'postAttachCommand' to install package in editable mode on each attach
 	// This ensures the package is always up to date with local changes

@@ -109,7 +109,8 @@ class DataPipeline:
     whether data is loaded lazily from disk, preloaded to CPU, or preloaded to GPU.
     
     Examples:
-        # Basic usage without augmentation, GPU preloading
+        Basic usage without augmentation, GPU preloading:
+
         >>> loaders = DataPipeline(
         ...     data_source=datasets.CIFAR10,
         ...     data_dir='./data/pytorch/cifar10',
@@ -119,8 +120,9 @@ class DataPipeline:
         ...     preload='gpu'
         ... ).get_loaders()
         >>> train_loader = loaders.train
-        
-        # With augmentation (pregenerated and saved to disk)
+
+        With augmentation (pregenerated and saved to disk):
+
         >>> loaders = DataPipeline(
         ...     data_source=datasets.CIFAR10,
         ...     data_dir='./data/pytorch/cifar10',
