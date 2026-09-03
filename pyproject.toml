@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "image-classification-tools"
-version = "0.6.0"
+version = "0.6.1"
 description = "A lightweight PyTorch toolkit for building and training image classification models"
 authors = ["gperdrizet <george@perdrizet.org>"]
 readme = "src/image_classification_tools/README.md"
@@ -28,7 +28,7 @@ classifiers = [
 keywords = ["Python", "Machine learning", "Deep learning", "CNNs", "Computer vision", "Image classification", "PyTorch", "Neural networks"]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.13"
+python = ">=3.10,<3.14"
 torch = ">=2.0"
 torchvision = ">=0.15"
 numpy = ">=1.24"
