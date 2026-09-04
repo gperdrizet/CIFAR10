@@ -24,7 +24,7 @@ For hyperparameter optimization:
 
 .. code-block:: bash
 
-   pip install optuna
+   pip install image-classification-tools[optuna]
 
 Or install with all optional dependencies:
 

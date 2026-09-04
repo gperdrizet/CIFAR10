@@ -18,6 +18,12 @@ This package provides utilities for common image classification tasks:
 pip install image-classification-tools
 ```
 
+For hyperparameter optimization, install with the `optuna` extra:
+
+```bash
+pip install image-classification-tools[optuna]
+```
+
 ## Quick start
 
 ### Basic usage
@@ -183,7 +189,7 @@ best_model = create_cnn(mock_trial, num_classes=10, in_channels=1)
 - torchvision ≥ 0.15.0
 - numpy
 - matplotlib
-- optuna (optional, for hyperparameter optimization)
+- optuna (optional, for hyperparameter optimization — install via `pip install image-classification-tools[optuna]`)
 
 ## Documentation
 

@@ -50,6 +50,7 @@ ipykernel = ">=6.0"
 [tool.poetry.extras]
 tensorflow = ["tensorflow"]
 optuna = ["optuna"]
+all = ["tensorflow", "optuna"]
 
 [tool.poetry.urls]
 Homepage = "https://github.com/gperdrizet/CIFAR10"
