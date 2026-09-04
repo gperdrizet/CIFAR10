@@ -2,17 +2,36 @@
 
 This module provides functions for running hyperparameter optimization with Optuna.
 Model architecture definition should be done in the notebook/experiment code.
+
+Optuna is an optional dependency. The functions in this module raise a clear
+ImportError if called without optuna installed, but importing this module
+(and the rest of the package) works fine without it.
 '''
+
+from __future__ import annotations
 
 from typing import Callable
 
-import optuna
+try:
+    import optuna
+except ImportError:
+    optuna = None
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from image_classification_tools.pytorch.data import DataPipeline
+
+
+def _require_optuna() -> None:
+    '''Raise a clear error if optuna is not installed.'''
+    if optuna is None:
+        raise ImportError(
+            "optuna is required for hyperparameter optimization. "
+            "Install it with: pip install optuna"
+        )
 
 
 class TrialFailedError(Exception):
@@ -86,6 +105,8 @@ def train_trial(
     Returns:
         Best validation accuracy achieved during training
     '''
+    _require_optuna()
+
     best_val_accuracy = 0.0
     best_val_loss = float('inf')
     patience_counter = 0
@@ -211,6 +232,7 @@ def create_objective(
         >>> study = optuna.create_study(direction='maximize')
         >>> study.optimize(objective, n_trials=100, n_jobs=4)
     '''
+    _require_optuna()
 
     if search_space == None:
         return None
